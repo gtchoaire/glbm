@@ -1,5 +1,5 @@
 [domain]
-n_size = 64
+n_size = 256
 aspect_ratio = 1
 
 [simulation]
@@ -9,7 +9,7 @@ precision = "float"
 
 [physics]
 reynolds_number = 3200.0
-u_max = 0.05
+u_max = 0.0256
 
 [lattice]
 stencil = "D3Q27"

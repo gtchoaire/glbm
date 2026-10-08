@@ -1,6 +1,48 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.24)
+
+find_program(NVIDIA_SMI_EXECUTABLE nvidia-smi REQUIRED)
+execute_process(
+    COMMAND "${NVIDIA_SMI_EXECUTABLE}"
+            --query-gpu=compute_cap
+            --format=csv,noheader,nounits
+    RESULT_VARIABLE NVIDIA_SMI_RESULT
+    OUTPUT_VARIABLE NVIDIA_COMPUTE_CAPABILITIES
+    ERROR_VARIABLE NVIDIA_SMI_ERROR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+if(NOT NVIDIA_SMI_RESULT EQUAL 0 OR NVIDIA_COMPUTE_CAPABILITIES STREQUAL "")
+    message(FATAL_ERROR
+        "Could not detect the CUDA architecture with nvidia-smi: "
+        "${NVIDIA_SMI_ERROR}")
+endif()
+
+string(REPLACE "\r" "" NVIDIA_COMPUTE_CAPABILITIES
+       "${NVIDIA_COMPUTE_CAPABILITIES}")
+string(REPLACE "\n" ";" NVIDIA_COMPUTE_CAPABILITIES
+       "${NVIDIA_COMPUTE_CAPABILITIES}")
+
+set(DETECTED_CUDA_ARCHITECTURES)
+foreach(COMPUTE_CAPABILITY IN LISTS NVIDIA_COMPUTE_CAPABILITIES)
+    string(STRIP "${COMPUTE_CAPABILITY}" COMPUTE_CAPABILITY)
+    if(NOT COMPUTE_CAPABILITY MATCHES "^([0-9]+)\\.([0-9]+)$")
+        message(FATAL_ERROR
+            "Unexpected compute capability reported by nvidia-smi: "
+            "'${COMPUTE_CAPABILITY}'")
+    endif()
+    list(APPEND DETECTED_CUDA_ARCHITECTURES
+         "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+endforeach()
+list(REMOVE_DUPLICATES DETECTED_CUDA_ARCHITECTURES)
+
+# Replace stale values in an existing build cache with the architecture(s)
+# detected from the local GPU(s).
+set(CMAKE_CUDA_ARCHITECTURES "${DETECTED_CUDA_ARCHITECTURES}" CACHE STRING
+    "CUDA architectures detected from the local GPU(s)" FORCE)
 
 project(glbm LANGUAGES CXX CUDA)
+
+message(STATUS "GLBM CUDA architecture(s): ${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
