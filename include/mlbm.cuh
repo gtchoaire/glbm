@@ -7,14 +7,18 @@
 #include PROPERTIES
 #include COLLISION
 #include RECONSTRUCTION
+#include "../src/colrec/D3Q27/evalMoments.cuh"
+#include "../src/colrec/D3Q27/boundary/secondOrder.cuh"
 
 __global__ void gpuMomCollisionStreamAB(
     LBMState source,
     LBMState destination,
-    const unsigned int *dNodeType,
+    const unsigned int *node_type,
     RemotePopulationHalos remote_halos,
-    bool has_back_wall, bool has_front_wall,
-    int global_z_start, unsigned int block_z_offset,
-    unsigned int block_z_stride, bool initial_step);
+    bool initial_step);
+
+__global__ void gpuInitializeWallPopulations(
+    LBMState source,
+    dfloat *initial_wall_populations);
 
 #endif

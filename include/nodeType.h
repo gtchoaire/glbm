@@ -4,6 +4,8 @@
 #include <builtin_types.h>
 #include <stdint.h>
 
+#include "globalStructs.cuh"
+
 // DIRECTION DEFINES 00000000
 
 #define BULK (0b00000000000000000000000000000000)
@@ -42,5 +44,8 @@
 #define MISSING_DEFINITION (0b11111111111111111111111111111111)
 
 #define DIRECTION_BITS (0b11111 << DIRECTION_OFFSET)
+
+bool initializeNodeTypes(DeviceDomain &domain);
+void freeNodeTypes(DeviceDomain &domain);
 
 #endif // !__NODE_TYPE_MAP_H

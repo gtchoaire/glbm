@@ -12,7 +12,11 @@ constexpr int GLOBAL_NX = N;
 constexpr int GLOBAL_NY = N;
 constexpr int GLOBAL_NZ = SAR * N;
 
-constexpr dfloat U_MAX = 0.05;
+static_assert(NUM_GPUS > 0, "NUM_GPUS must be greater than zero");
+static_assert(GLOBAL_NX > 0 && GLOBAL_NY > 0 && GLOBAL_NZ > 0,
+              "Global domain dimensions must be greater than zero");
+
+constexpr dfloat U_MAX = U_MAX_VALUE;
 constexpr dfloat L = N;
 constexpr dfloat RHO_0 = 1.0;
 constexpr dfloat VISC = U_MAX * (GLOBAL_NX - 1) / RE;

@@ -1,0 +1,19 @@
+[domain]
+n_size = 64
+aspect_ratio = 1
+
+[simulation]
+num_gpus = 1
+steps = 50000
+precision = "float"
+
+[physics]
+reynolds_number = 3200.0
+u_max = 0.05
+
+[lattice]
+stencil = "D3Q27"
+reconstruction_order = 2
+
+[output]
+interval = 5000

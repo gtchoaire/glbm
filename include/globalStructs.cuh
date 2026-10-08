@@ -1,7 +1,7 @@
 #ifndef GLOBAL_STRUCTS_H
 #define GLOBAL_STRUCTS_H
 
-using dfloat = float;
+#include "var.h"
 
 struct SubDomainInfo
 {

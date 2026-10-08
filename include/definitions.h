@@ -24,6 +24,10 @@ constexpr const int BLOCK_NX = 8;
 constexpr const int BLOCK_NY = 8;
 constexpr const int BLOCK_NZ = 4;
 
+static_assert(NX % BLOCK_NX == 0, "NX must be divisible by BLOCK_NX");
+static_assert(NY % BLOCK_NY == 0, "NY must be divisible by BLOCK_NY");
+static_assert(NZ % BLOCK_NZ == 0, "NZ must be divisible by BLOCK_NZ");
+
 #define BLOCK_LBM_SIZE (BLOCK_NX * BLOCK_NY * BLOCK_NZ)
 
 constexpr const size_t NUM_BLOCK_X = NX / BLOCK_NX;

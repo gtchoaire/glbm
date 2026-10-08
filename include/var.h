@@ -37,6 +37,10 @@ typedef std::chrono::high_resolution_clock::time_point timestep;
 #define RE_NUMBER 3200.0f
 #endif
 
+#ifndef U_MAX_VALUE
+#define U_MAX_VALUE 0.05f
+#endif
+
 #ifndef ORDER
 #define ORDER 2
 #endif
@@ -46,7 +50,7 @@ typedef std::chrono::high_resolution_clock::time_point timestep;
 #endif
 
 #ifndef NUM_GPUS
-#define NUM_GPUS 2
+#define NUM_GPUS 1
 #endif
 
 // clang-format off
