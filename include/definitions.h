@@ -20,9 +20,19 @@ constexpr dfloat TT_OMEGA_T3 = TT_OMEGA * 3.0; // 3*(1-0.5*OMEGA)
 constexpr dfloat ONESIXTH = 1.0 / 6.0;
 constexpr dfloat ONETHIRD = 1.0 / 3.0;
 
-constexpr const int BLOCK_NX = 8;
-constexpr const int BLOCK_NY = 8;
-constexpr const int BLOCK_NZ = 4;
+// Wide blocks improve coalescing on the moment layout used by the solver.
+// Domains that do not support that shape keep the original validated tile.
+constexpr bool USE_WIDE_CUDA_BLOCK = NX % 64 == 0 && NY % 4 == 0;
+constexpr const int BLOCK_NX = USE_WIDE_CUDA_BLOCK ? 64 : 8;
+constexpr const int BLOCK_NY = USE_WIDE_CUDA_BLOCK ? 4 : 8;
+constexpr const int BLOCK_NZ = USE_WIDE_CUDA_BLOCK ? 1 : 4;
+
+// Logical tile used by the validated AB first-step reconstruction.  Keep it
+// independent from the CUDA block geometry so launch tuning does not alter
+// which neighbouring states are collided during that first step.
+constexpr const int AB_TILE_NX = 8;
+constexpr const int AB_TILE_NY = 8;
+constexpr const int AB_TILE_NZ = 4;
 
 static_assert(NX % BLOCK_NX == 0, "NX must be divisible by BLOCK_NX");
 static_assert(NY % BLOCK_NY == 0, "NY must be divisible by BLOCK_NY");
