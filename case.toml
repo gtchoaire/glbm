@@ -1,10 +1,11 @@
 [domain]
-n_size = 256
+n_size = 128
 aspect_ratio = 1
 
 [simulation]
 num_gpus = 1
-steps = 50000
+steps = 100000
+print_interval = 5000
 precision = "float"
 
 [physics]
@@ -16,4 +17,5 @@ stencil = "D3Q27"
 reconstruction_order = 2
 
 [output]
+vti = false
 interval = 5000

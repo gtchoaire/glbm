@@ -42,4 +42,20 @@ constexpr const size_t MEM_SIZE_BLOCK_LBM = sizeof(dfloat) * BLOCK_LBM_SIZE * NU
 constexpr const size_t MEM_SIZE_SCALAR = sizeof(dfloat) * NUMBER_LBM_NODES;
 constexpr const size_t MEM_SIZE_MOM = sizeof(dfloat) * NUMBER_LBM_NODES * NUMBER_MOMENTS;
 
+#ifndef SAVE_VTI_OUTPUT_VALUE
+#define SAVE_VTI_OUTPUT_VALUE 1
+#endif
+
+static_assert(
+    SAVE_VTI_OUTPUT_VALUE == 0 || SAVE_VTI_OUTPUT_VALUE == 1,
+    "SAVE_VTI_OUTPUT_VALUE must be zero or one");
+constexpr bool SAVE_VTI_OUTPUT = SAVE_VTI_OUTPUT_VALUE != 0;
+
+#ifndef PRINT_INTERVAL_VALUE
+#define PRINT_INTERVAL_VALUE 10000
+#endif
+
+static_assert(PRINT_INTERVAL_VALUE > 0, "PRINT_INTERVAL_VALUE must be positive");
+constexpr int PRINT_INTERVAL = PRINT_INTERVAL_VALUE;
+
 #endif
