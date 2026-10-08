@@ -2,6 +2,12 @@
 
 namespace
 {
+constexpr int SHARED_HALO_NX = BLOCK_NX + 2;
+constexpr int SHARED_HALO_NY = BLOCK_NY + 2;
+constexpr int SHARED_HALO_NZ = BLOCK_NZ + 2;
+constexpr int SHARED_HALO_SIZE =
+    SHARED_HALO_NX * SHARED_HALO_NY * SHARED_HALO_NZ;
+
 __device__ inline size_t blockedIndex(const int x, const int y, const int z)
 {
     return idxScalarBlock(
@@ -64,22 +70,22 @@ __device__ inline dfloat reconstructPostCollisionPopulation(
 }
 
 __device__ inline dfloat reconstructCollidedPopulation(
-    const LBMState &source,
-    const size_t source_index,
+    const dfloat *shared_moments,
+    const int shared_index,
     const int population_index)
 {
     return reconstruct_population(
         population_index,
-        RHO_0 + source.d_rho[source_index],
-        source.d_ux[source_index],
-        source.d_uy[source_index],
-        source.d_uz[source_index],
-        source.d_mxx[source_index],
-        source.d_mxy[source_index],
-        source.d_mxz[source_index],
-        source.d_myy[source_index],
-        source.d_myz[source_index],
-        source.d_mzz[source_index]);
+        RHO_0 + shared_moments[M_RHO_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_UX_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_UY_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_UZ_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_MXX_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_MXY_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_MXZ_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_MYY_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_MYZ_INDEX * SHARED_HALO_SIZE + shared_index],
+        shared_moments[M_MZZ_INDEX * SHARED_HALO_SIZE + shared_index]);
 }
 } // namespace
 
@@ -244,8 +250,53 @@ __global__ void gpuStreamMomentsAB(
     const int y = threadIdx.y + blockDim.y * blockIdx.y;
     const int z = threadIdx.z + blockDim.z * blockIdx.z;
 
-    if (x >= NX || y >= NY || z >= NZ)
-        return;
+    __shared__ dfloat shared_moments[NUMBER_MOMENTS * SHARED_HALO_SIZE];
+
+    const int thread_index =
+        threadIdx.x + BLOCK_NX *
+            (threadIdx.y + BLOCK_NY * threadIdx.z);
+
+    for (int halo_index = thread_index;
+         halo_index < SHARED_HALO_SIZE;
+         halo_index += BLOCK_LBM_SIZE)
+    {
+        const int halo_x = halo_index % SHARED_HALO_NX;
+        const int halo_y =
+            (halo_index / SHARED_HALO_NX) % SHARED_HALO_NY;
+        const int halo_z =
+            halo_index / (SHARED_HALO_NX * SHARED_HALO_NY);
+
+        const int source_x =
+            (static_cast<int>(blockIdx.x) * BLOCK_NX + halo_x - 1 + NX) % NX;
+        const int source_y =
+            (static_cast<int>(blockIdx.y) * BLOCK_NY + halo_y - 1 + NY) % NY;
+        const int source_z =
+            (static_cast<int>(blockIdx.z) * BLOCK_NZ + halo_z - 1 + NZ) % NZ;
+        const size_t source_index = blockedIndex(source_x, source_y, source_z);
+
+        shared_moments[M_RHO_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_rho[source_index];
+        shared_moments[M_UX_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_ux[source_index];
+        shared_moments[M_UY_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_uy[source_index];
+        shared_moments[M_UZ_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_uz[source_index];
+        shared_moments[M_MXX_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_mxx[source_index];
+        shared_moments[M_MXY_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_mxy[source_index];
+        shared_moments[M_MXZ_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_mxz[source_index];
+        shared_moments[M_MYY_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_myy[source_index];
+        shared_moments[M_MYZ_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_myz[source_index];
+        shared_moments[M_MZZ_INDEX * SHARED_HALO_SIZE + halo_index] =
+            source.d_mzz[source_index];
+    }
+
+    __syncthreads();
 
     const size_t destination_index = blockedIndex(x, y, z);
     const unsigned int destination_type = node_type[destination_index];
@@ -294,8 +345,18 @@ __global__ void gpuStreamMomentsAB(
             }
         }
 
+        const int shared_x =
+            static_cast<int>(threadIdx.x) + 1 - static_cast<int>(cx[i]);
+        const int shared_y =
+            static_cast<int>(threadIdx.y) + 1 - static_cast<int>(cy[i]);
+        const int shared_z =
+            static_cast<int>(threadIdx.z) + 1 - static_cast<int>(cz[i]);
+        const int shared_index =
+            shared_x + SHARED_HALO_NX *
+                (shared_y + SHARED_HALO_NY * shared_z);
+
         pop[i] = reconstructCollidedPopulation(
-            source, blockedIndex(source_x, source_y, source_z), i);
+            shared_moments, shared_index, i);
     }
 
     dfloat rho;

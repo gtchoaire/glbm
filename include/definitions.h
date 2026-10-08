@@ -20,12 +20,13 @@ constexpr dfloat TT_OMEGA_T3 = TT_OMEGA * 3.0; // 3*(1-0.5*OMEGA)
 constexpr dfloat ONESIXTH = 1.0 / 6.0;
 constexpr dfloat ONETHIRD = 1.0 / 3.0;
 
-// Wide blocks improve coalescing on the moment layout used by the solver.
-// Domains that do not support that shape keep the original validated tile.
-constexpr bool USE_WIDE_CUDA_BLOCK = NX % 64 == 0 && NY % 4 == 0;
-constexpr const int BLOCK_NX = USE_WIDE_CUDA_BLOCK ? 64 : 8;
-constexpr const int BLOCK_NY = USE_WIDE_CUDA_BLOCK ? 4 : 8;
-constexpr const int BLOCK_NZ = USE_WIDE_CUDA_BLOCK ? 1 : 4;
+// This shape balances coalescing with the halo volume loaded into shared
+// memory. Domains that do not support it keep the original validated tile.
+constexpr bool USE_OPTIMIZED_CUDA_BLOCK =
+    NX % 16 == 0 && NY % 8 == 0 && NZ % 2 == 0;
+constexpr const int BLOCK_NX = USE_OPTIMIZED_CUDA_BLOCK ? 16 : 8;
+constexpr const int BLOCK_NY = 8;
+constexpr const int BLOCK_NZ = USE_OPTIMIZED_CUDA_BLOCK ? 2 : 4;
 
 // Logical tile used by the validated AB first-step reconstruction.  Keep it
 // independent from the CUDA block geometry so launch tuning does not alter

@@ -34,6 +34,9 @@ namespace
 
     void reportProgress(
         const int completed_steps,
+        const int interval_steps,
+        const double interval_solver_seconds,
+        const double interval_wall_seconds,
         const double solver_seconds,
         const double wall_seconds)
     {
@@ -51,10 +54,16 @@ namespace
 
         std::printf(
             "Step %010d / %010d | %6.2f%% | "
-            "MLUPS solver %10.3f | wall %10.3f | ETA %02llu:%02llu:%02llu\n",
+            "MLUPS interval solver %10.3f wall %10.3f | "
+            "average solver %10.3f wall %10.3f | "
+            "ETA %02llu:%02llu:%02llu\n",
             completed_steps,
             N_STEPS,
             progress,
+            calculateMlups(
+                NUMBER_LBM_NODES, interval_steps, interval_solver_seconds),
+            calculateMlups(
+                NUMBER_LBM_NODES, interval_steps, interval_wall_seconds),
             calculateMlups(NUMBER_LBM_NODES, completed_steps, solver_seconds),
             calculateMlups(NUMBER_LBM_NODES, completed_steps, wall_seconds),
             eta_hours,
@@ -123,8 +132,11 @@ int runSimulation()
             cudaEventCreate(&solver_stop), "creating the MLUPS stop event");
 
     double solver_seconds = 0.0;
+    double solver_seconds_at_last_report = 0.0;
     int completed_steps = 0;
+    int steps_at_last_report = 0;
     const auto wall_start = std::chrono::steady_clock::now();
+    auto wall_at_last_report = wall_start;
     if (success)
         success = checkCuda(
             cudaEventRecord(solver_start), "starting the MLUPS measurement");
@@ -196,10 +208,28 @@ int runSimulation()
 
         if (success && print_progress)
         {
-            const double wall_seconds = std::chrono::duration<double>(
-                                            std::chrono::steady_clock::now() - wall_start)
-                                            .count();
-            reportProgress(completed_steps, solver_seconds, wall_seconds);
+            const auto wall_now = std::chrono::steady_clock::now();
+            const double wall_seconds =
+                std::chrono::duration<double>(wall_now - wall_start).count();
+            const double interval_wall_seconds =
+                std::chrono::duration<double>(wall_now - wall_at_last_report)
+                    .count();
+            const double interval_solver_seconds =
+                solver_seconds - solver_seconds_at_last_report;
+            const int interval_steps =
+                completed_steps - steps_at_last_report;
+
+            reportProgress(
+                completed_steps,
+                interval_steps,
+                interval_solver_seconds,
+                interval_wall_seconds,
+                solver_seconds,
+                wall_seconds);
+
+            solver_seconds_at_last_report = solver_seconds;
+            steps_at_last_report = completed_steps;
+            wall_at_last_report = wall_now;
         }
 
         if (success && measurement_boundary && completed_steps < N_STEPS)
