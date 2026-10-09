@@ -1,11 +1,11 @@
 [domain]
-n_size = 128
+n_size = 64
 aspect_ratio = 1
 
 [simulation]
 num_gpus = 1
-steps = 100000
-print_interval = 5000
+steps = 10000
+print_interval = 1000
 precision = "float"
 
 [physics]
@@ -15,6 +15,11 @@ u_max = 0.0256
 [lattice]
 stencil = "D3Q27"
 reconstruction_order = 2
+
+[cuda]
+block_x = 32
+block_y = 4
+block_z = 2
 
 [output]
 vti = false

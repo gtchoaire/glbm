@@ -20,13 +20,21 @@ constexpr dfloat TT_OMEGA_T3 = TT_OMEGA * 3.0; // 3*(1-0.5*OMEGA)
 constexpr dfloat ONESIXTH = 1.0 / 6.0;
 constexpr dfloat ONETHIRD = 1.0 / 3.0;
 
-// This shape balances coalescing with the halo volume loaded into shared
-// memory. Domains that do not support it keep the original validated tile.
-constexpr bool USE_OPTIMIZED_CUDA_BLOCK =
-    NX % 16 == 0 && NY % 8 == 0 && NZ % 2 == 0;
-constexpr const int BLOCK_NX = USE_OPTIMIZED_CUDA_BLOCK ? 16 : 8;
-constexpr const int BLOCK_NY = 8;
-constexpr const int BLOCK_NZ = USE_OPTIMIZED_CUDA_BLOCK ? 2 : 4;
+#ifndef BLOCK_NX_VALUE
+#define BLOCK_NX_VALUE 16
+#endif
+#ifndef BLOCK_NY_VALUE
+#define BLOCK_NY_VALUE 8
+#endif
+#ifndef BLOCK_NZ_VALUE
+#define BLOCK_NZ_VALUE 2
+#endif
+
+// CUDA execution geometry. It can be tuned without changing the logical AB
+// tile below, which is part of the validated numerical method.
+constexpr const int BLOCK_NX = BLOCK_NX_VALUE;
+constexpr const int BLOCK_NY = BLOCK_NY_VALUE;
+constexpr const int BLOCK_NZ = BLOCK_NZ_VALUE;
 
 // Logical tile used by the validated AB first-step reconstruction.  Keep it
 // independent from the CUDA block geometry so launch tuning does not alter
@@ -38,6 +46,8 @@ constexpr const int AB_TILE_NZ = 4;
 static_assert(NX % BLOCK_NX == 0, "NX must be divisible by BLOCK_NX");
 static_assert(NY % BLOCK_NY == 0, "NY must be divisible by BLOCK_NY");
 static_assert(NZ % BLOCK_NZ == 0, "NZ must be divisible by BLOCK_NZ");
+static_assert(BLOCK_NX * BLOCK_NY * BLOCK_NZ <= 1024,
+              "A CUDA block cannot contain more than 1024 threads");
 
 #define BLOCK_LBM_SIZE (BLOCK_NX * BLOCK_NY * BLOCK_NZ)
 

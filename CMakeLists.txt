@@ -91,6 +91,9 @@ read_toml_value(reynolds_number LBM_RE_NUMBER)
 read_toml_value(u_max LBM_U_MAX)
 read_toml_value(stencil LBM_STENCIL)
 read_toml_value(reconstruction_order LBM_ORDER)
+read_toml_value(block_x LBM_BLOCK_X)
+read_toml_value(block_y LBM_BLOCK_Y)
+read_toml_value(block_z LBM_BLOCK_Z)
 read_toml_value(vti LBM_SAVE_VTI)
 read_toml_value(interval LBM_OUTPUT_INTERVAL)
 
@@ -101,11 +104,39 @@ foreach(parameter
         LBM_SIMULATION_STEPS
         LBM_PRINT_INTERVAL
         LBM_ORDER
+        LBM_BLOCK_X
+        LBM_BLOCK_Y
+        LBM_BLOCK_Z
         LBM_OUTPUT_INTERVAL)
     if(NOT "${${parameter}}" MATCHES "^[1-9][0-9]*$")
         message(FATAL_ERROR "${parameter} must be a positive integer")
     endif()
 endforeach()
+
+math(EXPR LBM_BLOCK_SIZE
+    "${LBM_BLOCK_X} * ${LBM_BLOCK_Y} * ${LBM_BLOCK_Z}")
+if(LBM_BLOCK_SIZE GREATER 1024)
+    message(FATAL_ERROR
+        "CUDA block has ${LBM_BLOCK_SIZE} threads; the maximum is 1024")
+endif()
+
+if(LBM_BLOCK_X GREATER 1024 OR
+   LBM_BLOCK_Y GREATER 1024 OR
+   LBM_BLOCK_Z GREATER 64)
+    message(FATAL_ERROR
+        "CUDA block dimensions exceed the hardware limits 1024 x 1024 x 64")
+endif()
+
+math(EXPR LBM_LOCAL_NZ "${LBM_N_SIZE} * ${LBM_SAR} / ${LBM_NUM_GPUS}")
+math(EXPR LBM_BLOCK_REMAINDER_X "${LBM_N_SIZE} % ${LBM_BLOCK_X}")
+math(EXPR LBM_BLOCK_REMAINDER_Y "${LBM_N_SIZE} % ${LBM_BLOCK_Y}")
+math(EXPR LBM_BLOCK_REMAINDER_Z "${LBM_LOCAL_NZ} % ${LBM_BLOCK_Z}")
+if(LBM_BLOCK_REMAINDER_X OR
+   LBM_BLOCK_REMAINDER_Y OR
+   LBM_BLOCK_REMAINDER_Z)
+    message(FATAL_ERROR
+        "The local domain must be divisible by the CUDA block dimensions")
+endif()
 
 if(NOT LBM_RE_NUMBER MATCHES "^[0-9]+([.][0-9]+)?$")
     message(FATAL_ERROR "reynolds_number must be a positive number")
@@ -137,6 +168,7 @@ message(STATUS "GLBM case file: ${LBM_CONFIG_FILE}")
 message(STATUS "GLBM domain: ${LBM_N_SIZE} x ${LBM_N_SIZE} x (${LBM_SAR} * ${LBM_N_SIZE})")
 message(STATUS "GLBM GPUs: ${LBM_NUM_GPUS}")
 message(STATUS "GLBM precision: ${LBM_PRECISION}")
+message(STATUS "GLBM CUDA block: ${LBM_BLOCK_X} x ${LBM_BLOCK_Y} x ${LBM_BLOCK_Z}")
 message(STATUS "GLBM progress interval: ${LBM_PRINT_INTERVAL}")
 message(STATUS "GLBM VTI output: ${LBM_SAVE_VTI}")
 
@@ -156,6 +188,7 @@ target_include_directories(glbm PRIVATE include)
 target_compile_options(glbm PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-O3>
     $<$<COMPILE_LANGUAGE:CUDA>:--restrict>
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
 )
 
 target_compile_definitions(glbm PRIVATE
@@ -168,6 +201,9 @@ target_compile_definitions(glbm PRIVATE
     PRINT_INTERVAL_VALUE=${LBM_PRINT_INTERVAL}
     STENCIL=${LBM_STENCIL}
     ORDER=${LBM_ORDER}
+    BLOCK_NX_VALUE=${LBM_BLOCK_X}
+    BLOCK_NY_VALUE=${LBM_BLOCK_Y}
+    BLOCK_NZ_VALUE=${LBM_BLOCK_Z}
     SAVE_VTI_OUTPUT_VALUE=${LBM_SAVE_VTI_VALUE}
     OUTPUT_INTERVAL=${LBM_OUTPUT_INTERVAL}
 )

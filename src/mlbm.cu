@@ -48,16 +48,16 @@ __device__ inline dfloat reconstructPostCollisionPopulation(
     const int population_index,
     const bool collide_source_moments)
 {
-    const dfloat rho = RHO_0 + source.d_rho[source_index];
-    const dfloat ux = source.d_ux[source_index];
-    const dfloat uy = source.d_uy[source_index];
-    const dfloat uz = source.d_uz[source_index];
-    dfloat mxx = source.d_mxx[source_index];
-    dfloat mxy = source.d_mxy[source_index];
-    dfloat mxz = source.d_mxz[source_index];
-    dfloat myy = source.d_myy[source_index];
-    dfloat myz = source.d_myz[source_index];
-    dfloat mzz = source.d_mzz[source_index];
+    const dfloat rho = RHO_0 + source.device(M_RHO_INDEX, source_index);
+    const dfloat ux = source.device(M_UX_INDEX, source_index);
+    const dfloat uy = source.device(M_UY_INDEX, source_index);
+    const dfloat uz = source.device(M_UZ_INDEX, source_index);
+    dfloat mxx = source.device(M_MXX_INDEX, source_index);
+    dfloat mxy = source.device(M_MXY_INDEX, source_index);
+    dfloat mxz = source.device(M_MXZ_INDEX, source_index);
+    dfloat myy = source.device(M_MYY_INDEX, source_index);
+    dfloat myz = source.device(M_MYZ_INDEX, source_index);
+    dfloat mzz = source.device(M_MZZ_INDEX, source_index);
 
     if (collide_source_moments)
         moment_collision(
@@ -97,9 +97,16 @@ __global__ void gpuInitializeWallPopulations(
         return;
 
     reconstructPostCollisionPopulationsFromMoments(
-        source.d_rho[0], source.d_ux[0], source.d_uy[0], source.d_uz[0],
-        source.d_mxx[0], source.d_mxy[0], source.d_mxz[0],
-        source.d_myy[0], source.d_myz[0], source.d_mzz[0],
+        source.device(M_RHO_INDEX, 0),
+        source.device(M_UX_INDEX, 0),
+        source.device(M_UY_INDEX, 0),
+        source.device(M_UZ_INDEX, 0),
+        source.device(M_MXX_INDEX, 0),
+        source.device(M_MXY_INDEX, 0),
+        source.device(M_MXZ_INDEX, 0),
+        source.device(M_MYY_INDEX, 0),
+        source.device(M_MYZ_INDEX, 0),
+        source.device(M_MZZ_INDEX, 0),
         initial_wall_populations, false);
 }
 
@@ -195,16 +202,16 @@ __global__ void gpuMomCollisionStreamAB(
             destination_type);
     }
 
-    destination.d_rho[destination_index] = rho - RHO_0;
-    destination.d_ux[destination_index] = F_M_I_SCALE * ux;
-    destination.d_uy[destination_index] = F_M_I_SCALE * uy;
-    destination.d_uz[destination_index] = F_M_I_SCALE * uz;
-    destination.d_mxx[destination_index] = F_M_II_SCALE * mxx;
-    destination.d_mxy[destination_index] = F_M_IJ_SCALE * mxy;
-    destination.d_mxz[destination_index] = F_M_IJ_SCALE * mxz;
-    destination.d_myy[destination_index] = F_M_II_SCALE * myy;
-    destination.d_myz[destination_index] = F_M_IJ_SCALE * myz;
-    destination.d_mzz[destination_index] = F_M_II_SCALE * mzz;
+    destination.device(M_RHO_INDEX, destination_index) = rho - RHO_0;
+    destination.device(M_UX_INDEX, destination_index) = F_M_I_SCALE * ux;
+    destination.device(M_UY_INDEX, destination_index) = F_M_I_SCALE * uy;
+    destination.device(M_UZ_INDEX, destination_index) = F_M_I_SCALE * uz;
+    destination.device(M_MXX_INDEX, destination_index) = F_M_II_SCALE * mxx;
+    destination.device(M_MXY_INDEX, destination_index) = F_M_IJ_SCALE * mxy;
+    destination.device(M_MXZ_INDEX, destination_index) = F_M_IJ_SCALE * mxz;
+    destination.device(M_MYY_INDEX, destination_index) = F_M_II_SCALE * myy;
+    destination.device(M_MYZ_INDEX, destination_index) = F_M_IJ_SCALE * myz;
+    destination.device(M_MZZ_INDEX, destination_index) = F_M_II_SCALE * mzz;
 }
 
 __global__ void gpuCollideMoments(LBMState state)
@@ -217,27 +224,27 @@ __global__ void gpuCollideMoments(LBMState state)
         return;
 
     const size_t index = blockedIndex(x, y, z);
-    const dfloat rho = RHO_0 + state.d_rho[index];
-    const dfloat ux = state.d_ux[index];
-    const dfloat uy = state.d_uy[index];
-    const dfloat uz = state.d_uz[index];
-    dfloat mxx = state.d_mxx[index];
-    dfloat mxy = state.d_mxy[index];
-    dfloat mxz = state.d_mxz[index];
-    dfloat myy = state.d_myy[index];
-    dfloat myz = state.d_myz[index];
-    dfloat mzz = state.d_mzz[index];
+    const dfloat rho = RHO_0 + state.device(M_RHO_INDEX, index);
+    const dfloat ux = state.device(M_UX_INDEX, index);
+    const dfloat uy = state.device(M_UY_INDEX, index);
+    const dfloat uz = state.device(M_UZ_INDEX, index);
+    dfloat mxx = state.device(M_MXX_INDEX, index);
+    dfloat mxy = state.device(M_MXY_INDEX, index);
+    dfloat mxz = state.device(M_MXZ_INDEX, index);
+    dfloat myy = state.device(M_MYY_INDEX, index);
+    dfloat myz = state.device(M_MYZ_INDEX, index);
+    dfloat mzz = state.device(M_MZZ_INDEX, index);
 
     moment_collision(
         rho, ux, uy, uz,
         &mxx, &mxy, &mxz, &myy, &myz, &mzz);
 
-    state.d_mxx[index] = mxx;
-    state.d_mxy[index] = mxy;
-    state.d_mxz[index] = mxz;
-    state.d_myy[index] = myy;
-    state.d_myz[index] = myz;
-    state.d_mzz[index] = mzz;
+    state.device(M_MXX_INDEX, index) = mxx;
+    state.device(M_MXY_INDEX, index) = mxy;
+    state.device(M_MXZ_INDEX, index) = mxz;
+    state.device(M_MYY_INDEX, index) = myy;
+    state.device(M_MYZ_INDEX, index) = myz;
+    state.device(M_MZZ_INDEX, index) = mzz;
 }
 
 __global__ void gpuStreamMomentsAB(
@@ -275,25 +282,25 @@ __global__ void gpuStreamMomentsAB(
         const size_t source_index = blockedIndex(source_x, source_y, source_z);
 
         shared_moments[M_RHO_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_rho[source_index];
+            source.device(M_RHO_INDEX, source_index);
         shared_moments[M_UX_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_ux[source_index];
+            source.device(M_UX_INDEX, source_index);
         shared_moments[M_UY_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_uy[source_index];
+            source.device(M_UY_INDEX, source_index);
         shared_moments[M_UZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_uz[source_index];
+            source.device(M_UZ_INDEX, source_index);
         shared_moments[M_MXX_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_mxx[source_index];
+            source.device(M_MXX_INDEX, source_index);
         shared_moments[M_MXY_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_mxy[source_index];
+            source.device(M_MXY_INDEX, source_index);
         shared_moments[M_MXZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_mxz[source_index];
+            source.device(M_MXZ_INDEX, source_index);
         shared_moments[M_MYY_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_myy[source_index];
+            source.device(M_MYY_INDEX, source_index);
         shared_moments[M_MYZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_myz[source_index];
+            source.device(M_MYZ_INDEX, source_index);
         shared_moments[M_MZZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.d_mzz[source_index];
+            source.device(M_MZZ_INDEX, source_index);
     }
 
     __syncthreads();
@@ -301,6 +308,9 @@ __global__ void gpuStreamMomentsAB(
     const size_t destination_index = blockedIndex(x, y, z);
     const unsigned int destination_type = node_type[destination_index];
     dfloat pop[Q];
+    const int tile_x = x % AB_TILE_NX;
+    const int tile_y = y % AB_TILE_NY;
+    const int tile_z = z % AB_TILE_NZ;
 
 #pragma unroll
     for (int i = 0; i < Q; ++i)
@@ -309,40 +319,34 @@ __global__ void gpuStreamMomentsAB(
         const int unwrapped_source_y = y - static_cast<int>(cy[i]);
         const int unwrapped_source_z = z - static_cast<int>(cz[i]);
 
-        const int source_x = (unwrapped_source_x + NX) % NX;
-        const int source_y = (unwrapped_source_y + NY) % NY;
-        const int source_z = (unwrapped_source_z + NZ) % NZ;
-
+        const int tile_source_x = tile_x - static_cast<int>(cx[i]);
+        const int tile_source_y = tile_y - static_cast<int>(cy[i]);
+        const int tile_source_z = tile_z - static_cast<int>(cz[i]);
         const bool crosses_x_tile =
-            source_x / AB_TILE_NX != x / AB_TILE_NX;
+            tile_source_x < 0 || tile_source_x >= AB_TILE_NX;
         const bool crosses_y_tile =
-            source_y / AB_TILE_NY != y / AB_TILE_NY;
+            tile_source_y < 0 || tile_source_y >= AB_TILE_NY;
         const bool crosses_z_tile =
-            source_z / AB_TILE_NZ != z / AB_TILE_NZ;
-        const bool crosses_tile =
-            crosses_x_tile || crosses_y_tile || crosses_z_tile;
+            tile_source_z < 0 || tile_source_z >= AB_TILE_NZ;
 
-        if (crosses_tile)
+        const bool crosses_physical_x_wall =
+            unwrapped_source_x < 0 || unwrapped_source_x >= NX;
+        const bool crosses_physical_y_wall =
+            unwrapped_source_y < 0 || unwrapped_source_y >= NY;
+        const bool crosses_physical_z_wall =
+            unwrapped_source_z < 0 || unwrapped_source_z >= NZ;
+
+        const bool reads_initialized_wall_population =
+            (crosses_z_tile && crosses_physical_z_wall) ||
+            (!crosses_z_tile && crosses_y_tile &&
+             crosses_physical_y_wall) ||
+            (!crosses_z_tile && !crosses_y_tile && crosses_x_tile &&
+             crosses_physical_x_wall);
+
+        if (reads_initialized_wall_population)
         {
-            const bool crosses_physical_x_wall =
-                unwrapped_source_x < 0 || unwrapped_source_x >= NX;
-            const bool crosses_physical_y_wall =
-                unwrapped_source_y < 0 || unwrapped_source_y >= NY;
-            const bool crosses_physical_z_wall =
-                unwrapped_source_z < 0 || unwrapped_source_z >= NZ;
-
-            const bool reads_initialized_wall_population =
-                (crosses_z_tile && crosses_physical_z_wall) ||
-                (!crosses_z_tile && crosses_y_tile &&
-                 crosses_physical_y_wall) ||
-                (!crosses_z_tile && !crosses_y_tile && crosses_x_tile &&
-                 crosses_physical_x_wall);
-
-            if (reads_initialized_wall_population)
-            {
-                pop[i] = remote_halos.initial_wall[i];
-                continue;
-            }
+            pop[i] = remote_halos.initial_wall[i];
+            continue;
         }
 
         const int shared_x =
@@ -397,14 +401,14 @@ __global__ void gpuStreamMomentsAB(
         rho, ux, uy, uz,
         &mxx, &mxy, &mxz, &myy, &myz, &mzz);
 
-    destination.d_rho[destination_index] = rho - RHO_0;
-    destination.d_ux[destination_index] = ux;
-    destination.d_uy[destination_index] = uy;
-    destination.d_uz[destination_index] = uz;
-    destination.d_mxx[destination_index] = mxx;
-    destination.d_mxy[destination_index] = mxy;
-    destination.d_mxz[destination_index] = mxz;
-    destination.d_myy[destination_index] = myy;
-    destination.d_myz[destination_index] = myz;
-    destination.d_mzz[destination_index] = mzz;
+    destination.device(M_RHO_INDEX, destination_index) = rho - RHO_0;
+    destination.device(M_UX_INDEX, destination_index) = ux;
+    destination.device(M_UY_INDEX, destination_index) = uy;
+    destination.device(M_UZ_INDEX, destination_index) = uz;
+    destination.device(M_MXX_INDEX, destination_index) = mxx;
+    destination.device(M_MXY_INDEX, destination_index) = mxy;
+    destination.device(M_MXZ_INDEX, destination_index) = mxz;
+    destination.device(M_MYY_INDEX, destination_index) = myy;
+    destination.device(M_MYZ_INDEX, destination_index) = myz;
+    destination.device(M_MZZ_INDEX, destination_index) = mzz;
 }

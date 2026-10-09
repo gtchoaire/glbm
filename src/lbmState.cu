@@ -19,34 +19,6 @@ bool checkCuda(const cudaError_t status, const char *operation)
     return false;
 }
 
-bool allocateField(dfloat *&host, dfloat *&device)
-{
-    host = new (std::nothrow) dfloat[NUMBER_LBM_NODES];
-    if (host == nullptr)
-        return false;
-
-    return checkCuda(
-        cudaMalloc(reinterpret_cast<void **>(&device), MEM_SIZE_SCALAR),
-        "allocating an LBM field");
-}
-
-void freeField(dfloat *&host, dfloat *&device)
-{
-    delete[] host;
-    host = nullptr;
-
-    if (device != nullptr)
-        cudaFree(device);
-    device = nullptr;
-}
-
-bool copyFieldToHost(dfloat *host, const dfloat *device)
-{
-    return checkCuda(
-        cudaMemcpy(host, device, MEM_SIZE_SCALAR, cudaMemcpyDeviceToHost),
-        "copying an LBM field to the host");
-}
-
 __global__ void gpuInitializeEquilibrium(LBMState state)
 {
     const int x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -65,10 +37,10 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
     const dfloat uy = static_cast<dfloat>(0);
     const dfloat uz = static_cast<dfloat>(0);
 
-    state.d_rho[index] = rho - RHO_0;
-    state.d_ux[index] = F_M_I_SCALE * ux;
-    state.d_uy[index] = F_M_I_SCALE * uy;
-    state.d_uz[index] = F_M_I_SCALE * uz;
+    state.device(M_RHO_INDEX, index) = rho - RHO_0;
+    state.device(M_UX_INDEX, index) = F_M_I_SCALE * ux;
+    state.device(M_UY_INDEX, index) = F_M_I_SCALE * uy;
+    state.device(M_UZ_INDEX, index) = F_M_I_SCALE * uz;
 
     dfloat pop[Q];
 #pragma unroll
@@ -103,28 +75,23 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
         pop[20] + pop[21] + pop[22] + pop[23] + pop[24] + pop[25] +
         pop[26]) * inverse_rho - cs2;
 
-    state.d_mxx[index] = F_M_II_SCALE * mxx;
-    state.d_mxy[index] = F_M_IJ_SCALE * mxy;
-    state.d_mxz[index] = F_M_IJ_SCALE * mxz;
-    state.d_myy[index] = F_M_II_SCALE * myy;
-    state.d_myz[index] = F_M_IJ_SCALE * myz;
-    state.d_mzz[index] = F_M_II_SCALE * mzz;
+    state.device(M_MXX_INDEX, index) = F_M_II_SCALE * mxx;
+    state.device(M_MXY_INDEX, index) = F_M_IJ_SCALE * mxy;
+    state.device(M_MXZ_INDEX, index) = F_M_IJ_SCALE * mxz;
+    state.device(M_MYY_INDEX, index) = F_M_II_SCALE * myy;
+    state.device(M_MYZ_INDEX, index) = F_M_IJ_SCALE * myz;
+    state.device(M_MZZ_INDEX, index) = F_M_II_SCALE * mzz;
 }
 } // namespace
 
 bool allocateLBMState(LBMState &state)
 {
-    const bool success =
-        allocateField(state.h_rho, state.d_rho) &&
-        allocateField(state.h_ux, state.d_ux) &&
-        allocateField(state.h_uy, state.d_uy) &&
-        allocateField(state.h_uz, state.d_uz) &&
-        allocateField(state.h_mxx, state.d_mxx) &&
-        allocateField(state.h_mxy, state.d_mxy) &&
-        allocateField(state.h_mxz, state.d_mxz) &&
-        allocateField(state.h_myy, state.d_myy) &&
-        allocateField(state.h_myz, state.d_myz) &&
-        allocateField(state.h_mzz, state.d_mzz);
+    state.h_moments =
+        new (std::nothrow) dfloat[NUMBER_LBM_NODES * NUMBER_MOMENTS];
+    const bool success = state.h_moments != nullptr && checkCuda(
+        cudaMalloc(
+            reinterpret_cast<void **>(&state.d_moments), MEM_SIZE_MOM),
+        "allocating the LBM moments");
 
     if (!success)
     {
@@ -137,25 +104,21 @@ bool allocateLBMState(LBMState &state)
 
 void freeLBMState(LBMState &state)
 {
-    freeField(state.h_rho, state.d_rho);
-    freeField(state.h_ux, state.d_ux);
-    freeField(state.h_uy, state.d_uy);
-    freeField(state.h_uz, state.d_uz);
-    freeField(state.h_mxx, state.d_mxx);
-    freeField(state.h_mxy, state.d_mxy);
-    freeField(state.h_mxz, state.d_mxz);
-    freeField(state.h_myy, state.d_myy);
-    freeField(state.h_myz, state.d_myz);
-    freeField(state.h_mzz, state.d_mzz);
+    delete[] state.h_moments;
+    state.h_moments = nullptr;
+
+    if (state.d_moments != nullptr)
+        cudaFree(state.d_moments);
+    state.d_moments = nullptr;
 }
 
 bool copyMacroscopicFieldsToHost(LBMState &state)
 {
-    return
-        copyFieldToHost(state.h_rho, state.d_rho) &&
-        copyFieldToHost(state.h_ux, state.d_ux) &&
-        copyFieldToHost(state.h_uy, state.d_uy) &&
-        copyFieldToHost(state.h_uz, state.d_uz);
+    return checkCuda(
+        cudaMemcpy(
+            state.h_moments, state.d_moments,
+            MEM_SIZE_MOM, cudaMemcpyDeviceToHost),
+        "copying the LBM moments to the host");
 }
 
 bool initializeEquilibrium(LBMState &state, const dim3 grid, const dim3 block)

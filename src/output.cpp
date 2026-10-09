@@ -53,7 +53,7 @@ bool writeVti(const LBMState &state, const int step)
                 const size_t index = idxScalarBlock(
                     x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
                     x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
-                file << RHO_0 + state.h_rho[index] << ' ';
+                file << RHO_0 + state.host(M_RHO_INDEX, index) << ' ';
             }
 
     file << "\n        </DataArray>\n"
@@ -69,9 +69,9 @@ bool writeVti(const LBMState &state, const int step)
                 const size_t index = idxScalarBlock(
                     x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
                     x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
-                file << state.h_ux[index] / F_M_I_SCALE << ' '
-                     << state.h_uy[index] / F_M_I_SCALE << ' '
-                     << state.h_uz[index] / F_M_I_SCALE << ' ';
+                file << state.host(M_UX_INDEX, index) / F_M_I_SCALE << ' '
+                     << state.host(M_UY_INDEX, index) / F_M_I_SCALE << ' '
+                     << state.host(M_UZ_INDEX, index) / F_M_I_SCALE << ' ';
             }
 
     file << "\n        </DataArray>\n"

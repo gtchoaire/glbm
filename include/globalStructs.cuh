@@ -34,29 +34,30 @@ struct SubDomainInfo
 
 struct LBMState
 {
-    // Host pointers for LBM state variables
-    dfloat *h_rho = nullptr;
-    dfloat *h_ux = nullptr;
-    dfloat *h_uy = nullptr;
-    dfloat *h_uz = nullptr;
-    dfloat *h_mxx = nullptr;
-    dfloat *h_mxy = nullptr;
-    dfloat *h_mxz = nullptr;
-    dfloat *h_myy = nullptr;
-    dfloat *h_myz = nullptr;
-    dfloat *h_mzz = nullptr;
+    // AoSoA layout: [block][moment][node inside block]. Threads of a warp
+    // access consecutive nodes while all moments of one block remain close.
+    dfloat *h_moments = nullptr;
+    dfloat *d_moments = nullptr;
 
-    // Device pointers for LBM state variables
-    dfloat *d_rho = nullptr;
-    dfloat *d_ux = nullptr;
-    dfloat *d_uy = nullptr;
-    dfloat *d_uz = nullptr;
-    dfloat *d_mxx = nullptr;
-    dfloat *d_mxy = nullptr;
-    dfloat *d_mxz = nullptr;
-    dfloat *d_myy = nullptr;
-    dfloat *d_myz = nullptr;
-    dfloat *d_mzz = nullptr;
+    __host__ __device__ static size_t storageIndex(
+        const int moment, const size_t scalar_index)
+    {
+        const size_t block = scalar_index / BLOCK_LBM_SIZE;
+        const size_t node = scalar_index - block * BLOCK_LBM_SIZE;
+        return node + BLOCK_LBM_SIZE *
+            (static_cast<size_t>(moment) + NUMBER_MOMENTS * block);
+    }
+
+    __host__ __device__ dfloat &device(
+        const int moment, const size_t scalar_index) const
+    {
+        return d_moments[storageIndex(moment, scalar_index)];
+    }
+
+    const dfloat &host(const int moment, const size_t scalar_index) const
+    {
+        return h_moments[storageIndex(moment, scalar_index)];
+    }
 };
 
 struct RemotePopulationHalos
