@@ -3,6 +3,7 @@
 
 #include "model.h"
 #include "index.h"
+#include <iostream>
 
 /* --------------------------- CONSTANTS --------------------------- */
 
@@ -78,5 +79,15 @@ constexpr bool SAVE_VTI_OUTPUT = SAVE_VTI_OUTPUT_VALUE != 0;
 
 static_assert(PRINT_INTERVAL_VALUE > 0, "PRINT_INTERVAL_VALUE must be positive");
 constexpr int PRINT_INTERVAL = PRINT_INTERVAL_VALUE;
+
+#define checkCuda(cmd)                                                \
+do {                                                               \
+    const auto status = (cmd);                                     \
+    if (status != cudaSuccess) {                                   \
+        std::printf("cuda error %s:%d: %s\n", __FILE__, __LINE__,  \
+        cudaGetErrorString(status));                               \
+        exit(EXIT_FAILURE);                                        \
+    }                                                              \
+} while (0)
 
 #endif

@@ -19,3 +19,5 @@ CMakeUserPresets.json
 /build/
 /profiles/
 cmake-build-*/
+/.autotune/
+/build-autotune/

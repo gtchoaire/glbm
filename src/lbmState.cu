@@ -1,6 +1,6 @@
 #include "../include/lbmState.cuh"
 
-#include <iostream>
+
 #include <new>
 
 #include "../include/definitions.h"
@@ -9,15 +9,6 @@
 
 namespace
 {
-bool checkCuda(const cudaError_t status, const char *operation)
-{
-    if (status == cudaSuccess)
-        return true;
-
-    std::cerr << "CUDA error while " << operation << ": "
-              << cudaGetErrorString(status) << '\n';
-    return false;
-}
 
 __global__ void gpuInitializeEquilibrium(LBMState state)
 {
@@ -84,22 +75,18 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
 }
 } // namespace
 
-bool allocateLBMState(LBMState &state)
+void allocateLBMState(LBMState &state)
 {
     state.h_moments =
         new (std::nothrow) dfloat[NUMBER_LBM_NODES * NUMBER_MOMENTS];
-    const bool success = state.h_moments != nullptr && checkCuda(
-        cudaMalloc(
-            reinterpret_cast<void **>(&state.d_moments), MEM_SIZE_MOM),
-        "allocating the LBM moments");
-
-    if (!success)
+    if (state.h_moments == nullptr)
     {
-        std::cerr << "Failed to allocate an LBM state.\n";
-        freeLBMState(state);
+        std::printf("Failed to allocate the host LBM moments.\n");
+        std::exit(EXIT_FAILURE);
     }
 
-    return success;
+    checkCuda(cudaMalloc(
+        reinterpret_cast<void **>(&state.d_moments), MEM_SIZE_MOM));
 }
 
 void freeLBMState(LBMState &state)
@@ -112,18 +99,16 @@ void freeLBMState(LBMState &state)
     state.d_moments = nullptr;
 }
 
-bool copyMacroscopicFieldsToHost(LBMState &state)
+void copyMacroscopicFieldsToHost(LBMState &state)
 {
-    return checkCuda(
-        cudaMemcpy(
-            state.h_moments, state.d_moments,
-            MEM_SIZE_MOM, cudaMemcpyDeviceToHost),
-        "copying the LBM moments to the host");
+    checkCuda(cudaMemcpy(
+        state.h_moments, state.d_moments,
+        MEM_SIZE_MOM, cudaMemcpyDeviceToHost));
 }
 
-bool initializeEquilibrium(LBMState &state, const dim3 grid, const dim3 block)
+void initializeEquilibrium(LBMState &state, const dim3 grid, const dim3 block)
 {
     gpuInitializeEquilibrium<<<grid, block>>>(state);
-    return checkCuda(cudaGetLastError(), "launching equilibrium initialization") &&
-           checkCuda(cudaDeviceSynchronize(), "initializing equilibrium");
+    checkCuda(cudaGetLastError());
+    checkCuda(cudaDeviceSynchronize());
 }

@@ -3,9 +3,9 @@
 
 #include "globalStructs.cuh"
 
-bool allocateLBMState(LBMState &state);
+void allocateLBMState(LBMState &state);
 void freeLBMState(LBMState &state);
-bool copyMacroscopicFieldsToHost(LBMState &state);
-bool initializeEquilibrium(LBMState &state, dim3 grid, dim3 block);
+void copyMacroscopicFieldsToHost(LBMState &state);
+void initializeEquilibrium(LBMState &state, dim3 grid, dim3 block);
 
 #endif

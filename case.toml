@@ -1,15 +1,15 @@
 [domain]
-n_size = 64
+n_size = 256
 aspect_ratio = 1
 
 [simulation]
 num_gpus = 1
-steps = 10000
+steps = 100000
 print_interval = 1000
 precision = "float"
 
 [physics]
-reynolds_number = 3200.0
+reynolds_number = 10000.0
 u_max = 0.0256
 
 [lattice]
@@ -19,8 +19,8 @@ reconstruction_order = 2
 [cuda]
 block_x = 32
 block_y = 4
-block_z = 2
+block_z = 4
 
 [output]
-vti = false
+vti = true
 interval = 5000

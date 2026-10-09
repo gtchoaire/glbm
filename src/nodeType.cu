@@ -1,9 +1,7 @@
 #include "../include/nodeType.h"
 
-#include <iostream>
 #include <new>
 #include <cuda_runtime.h>
-
 #include "../include/globalFunctions.cuh"
 
 namespace
@@ -29,14 +27,6 @@ unsigned int nodeTypeAt(
     return type;
 }
 
-bool checkCuda(const cudaError_t status, const char *operation)
-{
-    if (status == cudaSuccess)
-        return true;
-    std::cerr << "CUDA error while " << operation << ": "
-              << cudaGetErrorString(status) << '\n';
-    return false;
-}
 }
 
 bool initializeNodeTypes(DeviceDomain &domain)
@@ -49,20 +39,14 @@ bool initializeNodeTypes(DeviceDomain &domain)
         for (int y = 0; y < NY; ++y)
             for (int x = 0; x < NX; ++x)
             {
-                const size_t index = idxScalarBlock(
-                    x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
-                    x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
+                const size_t index = idxScalarBlock(x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
                 domain.h_node_type[index] = nodeTypeAt(x, y, z, domain.info);
             }
 
     const size_t bytes = NUMBER_LBM_NODES * sizeof(unsigned int);
-    if (!checkCuda(cudaMalloc(
-            reinterpret_cast<void **>(&domain.d_node_type), bytes),
-            "allocating the node map") ||
-        !checkCuda(cudaMemcpy(
-            domain.d_node_type, domain.h_node_type, bytes,
-            cudaMemcpyHostToDevice),
-            "copying the node map"))
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.d_node_type), bytes));
+    checkCuda(cudaMemcpy(domain.d_node_type, domain.h_node_type, bytes, cudaMemcpyHostToDevice));
+    if (cudaGetLastError() != cudaSuccess)
     {
         freeNodeTypes(domain);
         return false;

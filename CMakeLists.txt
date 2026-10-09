@@ -49,7 +49,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-set(LBM_CONFIG_FILE "${CMAKE_SOURCE_DIR}/case.toml")
+set(LBM_CONFIG_FILE "${CMAKE_SOURCE_DIR}/case.toml" CACHE FILEPATH
+    "TOML file containing the simulation configuration")
+get_filename_component(LBM_CONFIG_FILE "${LBM_CONFIG_FILE}" ABSOLUTE
+    BASE_DIR "${CMAKE_SOURCE_DIR}")
 
 if(NOT EXISTS "${LBM_CONFIG_FILE}")
     message(FATAL_ERROR "Simulation configuration not found: ${LBM_CONFIG_FILE}")
@@ -96,6 +99,21 @@ read_toml_value(block_y LBM_BLOCK_Y)
 read_toml_value(block_z LBM_BLOCK_Z)
 read_toml_value(vti LBM_SAVE_VTI)
 read_toml_value(interval LBM_OUTPUT_INTERVAL)
+
+# Optional command-line overrides used by the hardware autotuner.  Keeping
+# these values out of case.toml lets each candidate use the exact same case.
+foreach(parameter
+        NUM_GPUS
+        SIMULATION_STEPS
+        PRINT_INTERVAL
+        BLOCK_X
+        BLOCK_Y
+        BLOCK_Z
+        SAVE_VTI)
+    if(DEFINED LBM_${parameter}_OVERRIDE)
+        set(LBM_${parameter} "${LBM_${parameter}_OVERRIDE}")
+    endif()
+endforeach()
 
 foreach(parameter
         LBM_NUM_GPUS

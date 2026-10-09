@@ -3,6 +3,7 @@
 
 #include <builtin_types.h>
 #include <stdint.h>
+#include "definitions.h"
 
 #include "globalStructs.cuh"
 

@@ -2,5 +2,6 @@
 
 int main()
 {
-    return runSimulation();
+    runSimulation();
+    return 0;
 }

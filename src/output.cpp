@@ -5,8 +5,8 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-
 #include "../include/globalFunctions.cuh"
+
 #include PROPERTIES
 
 bool writeVti(const LBMState &state, const int step)
