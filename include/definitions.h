@@ -70,6 +70,20 @@ constexpr bool SAVE_VTI_OUTPUT = SAVE_VTI_OUTPUT_VALUE != 0;
 
 constexpr int PRINT_INTERVAL = PRINT_INTERVAL_VALUE;
 
+#ifndef CHECKPOINT_INTERVAL_VALUE
+#define CHECKPOINT_INTERVAL_VALUE 0
+#endif
+#ifndef CHECKPOINT_PATH_VALUE
+#define CHECKPOINT_PATH_VALUE "checkpoint.glbm"
+#endif
+#ifndef RESTART_PATH_VALUE
+#define RESTART_PATH_VALUE ""
+#endif
+
+constexpr size_t CHECKPOINT_INTERVAL = CHECKPOINT_INTERVAL_VALUE;
+constexpr const char *CHECKPOINT_PATH = CHECKPOINT_PATH_VALUE;
+constexpr const char *RESTART_PATH = RESTART_PATH_VALUE;
+
 #define checkCuda(cmd)                                                \
 do {                                                               \
     const auto status = (cmd);                                     \

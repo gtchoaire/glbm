@@ -3,7 +3,7 @@ n_size = 256
 aspect_ratio = 1
 
 [simulation]
-num_gpus = 1
+num_gpus = 2
 steps = 100000
 print_interval = 1000
 precision = "float"
@@ -23,4 +23,9 @@ block_z = 2
 
 [output]
 vti = false
-interval = 5000
+interval = 100000
+
+[checkpoint]
+checkpoint_interval = 0
+checkpoint_path = "checkpoint.glbm"
+restart_path = ""

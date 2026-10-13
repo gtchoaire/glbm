@@ -66,9 +66,10 @@ struct RemotePopulationHalos
 
 struct PopulationHaloBuffers
 {
-    dfloat *send = nullptr;
-    dfloat *periodic_send = nullptr;
-    dfloat *color_send = nullptr;
+    dfloat *back_send = nullptr;
+    dfloat *front_send = nullptr;
+    dfloat *h_back_staging = nullptr;
+    dfloat *h_front_staging = nullptr;
     RemotePopulationHalos remote;
 };
 
@@ -92,6 +93,8 @@ struct DeviceDomain
     cudaStream_t interior_stream;
     cudaEvent_t interior_complete;
     cudaEvent_t boundary_complete;
+    cudaEvent_t send_complete;
+    cudaEvent_t receive_complete;
 
     DeviceDomain(
         int physical_device_id,
@@ -108,7 +111,9 @@ struct DeviceDomain
           stream(nullptr),
           interior_stream(nullptr),
           interior_complete(nullptr),
-          boundary_complete(nullptr)
+          boundary_complete(nullptr),
+          send_complete(nullptr),
+          receive_complete(nullptr)
     {
     }
 };

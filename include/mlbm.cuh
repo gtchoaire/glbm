@@ -16,7 +16,9 @@ __global__ void gpuBootstrapABState(
     LBMState source,
     LBMState destination,
     const unsigned int *node_type,
-    RemotePopulationHalos remote_halos);
+    RemotePopulationHalos remote_halos,
+    SubDomainInfo subdomain,
+    int block_z_offset);
 
 __global__ void gpuCollideMoments(LBMState state);
 
@@ -26,10 +28,22 @@ __global__ void gpuStreamMomentsAB(
     LBMState source,
     LBMState destination,
     const unsigned int *node_type,
-    RemotePopulationHalos remote_halos);
+    RemotePopulationHalos remote_halos,
+    SubDomainInfo subdomain,
+    int block_z_offset);
 
 __global__ void gpuInitializeWallPopulations(
     LBMState source,
     dfloat *initial_wall_populations);
+
+__global__ void gpuPackFrontInterfacePopulations(
+    LBMState source,
+    int z,
+    dfloat *packed_populations);
+
+__global__ void gpuPackBackInterfacePopulations(
+    LBMState source,
+    int z,
+    dfloat *packed_populations);
 
 #endif

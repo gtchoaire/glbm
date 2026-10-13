@@ -99,6 +99,9 @@ read_toml_value(block_y LBM_BLOCK_Y)
 read_toml_value(block_z LBM_BLOCK_Z)
 read_toml_value(vti LBM_SAVE_VTI)
 read_toml_value(interval LBM_OUTPUT_INTERVAL)
+read_toml_value(checkpoint_interval LBM_CHECKPOINT_INTERVAL)
+read_toml_value(checkpoint_path LBM_CHECKPOINT_PATH)
+read_toml_value(restart_path LBM_RESTART_PATH)
 
 # Optional command-line overrides used by the hardware autotuner.  Keeping
 # these values out of case.toml lets each candidate use the exact same case.
@@ -109,7 +112,8 @@ foreach(parameter
         BLOCK_X
         BLOCK_Y
         BLOCK_Z
-        SAVE_VTI)
+        SAVE_VTI
+        CHECKPOINT_INTERVAL)
     if(DEFINED LBM_${parameter}_OVERRIDE)
         set(LBM_${parameter} "${LBM_${parameter}_OVERRIDE}")
     endif()
@@ -130,6 +134,15 @@ foreach(parameter
         message(FATAL_ERROR "${parameter} must be a positive integer")
     endif()
 endforeach()
+
+if(NOT "${LBM_CHECKPOINT_INTERVAL}" MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "checkpoint_interval must be a non-negative integer")
+endif()
+
+if(LBM_CHECKPOINT_INTERVAL GREATER 0 AND LBM_CHECKPOINT_PATH STREQUAL "")
+    message(FATAL_ERROR
+        "checkpoint_path must not be empty when checkpointing is enabled")
+endif()
 
 math(EXPR LBM_BLOCK_SIZE
     "${LBM_BLOCK_X} * ${LBM_BLOCK_Y} * ${LBM_BLOCK_Z}")
@@ -154,6 +167,13 @@ if(LBM_BLOCK_REMAINDER_X OR
    LBM_BLOCK_REMAINDER_Z)
     message(FATAL_ERROR
         "The local domain must be divisible by the CUDA block dimensions")
+endif()
+
+math(EXPR LBM_LOCAL_BLOCKS_Z "${LBM_LOCAL_NZ} / ${LBM_BLOCK_Z}")
+if(LBM_NUM_GPUS GREATER 1 AND LBM_LOCAL_BLOCKS_Z LESS 3)
+    message(FATAL_ERROR
+        "Multi-GPU overlap requires at least three CUDA blocks along the "
+        "local Z dimension")
 endif()
 
 if(NOT LBM_RE_NUMBER MATCHES "^[0-9]+([.][0-9]+)?$")
@@ -209,17 +229,23 @@ message(STATUS "GLBM CUDA block: ${LBM_BLOCK_X} x ${LBM_BLOCK_Y} x ${LBM_BLOCK_Z
 message(STATUS "GLBM stream shared memory: ${LBM_STREAM_SHARED_BYTES} bytes/block")
 message(STATUS "GLBM progress interval: ${LBM_PRINT_INTERVAL}")
 message(STATUS "GLBM VTI output: ${LBM_SAVE_VTI}")
+message(STATUS "GLBM checkpoint interval: ${LBM_CHECKPOINT_INTERVAL}")
+if(NOT LBM_RESTART_PATH STREQUAL "")
+    message(STATUS "GLBM restart file: ${LBM_RESTART_PATH}")
+endif()
 
 add_executable(glbm
+    src/checkpoint.cpp
     src/main.cu
     src/lbmState.cu
     src/mlbm.cu
+    src/multiGpu.cu
     src/nodeType.cu
     src/output.cpp
     src/simulation.cu
 )
 
-set_source_files_properties(src/output.cpp PROPERTIES LANGUAGE CUDA)
+set_source_files_properties(src/checkpoint.cpp src/output.cpp PROPERTIES LANGUAGE CUDA)
 
 target_include_directories(glbm PRIVATE include)
 
@@ -244,6 +270,9 @@ target_compile_definitions(glbm PRIVATE
     BLOCK_NZ_VALUE=${LBM_BLOCK_Z}
     SAVE_VTI_OUTPUT_VALUE=${LBM_SAVE_VTI_VALUE}
     OUTPUT_INTERVAL=${LBM_OUTPUT_INTERVAL}
+    CHECKPOINT_INTERVAL_VALUE=${LBM_CHECKPOINT_INTERVAL}
+    CHECKPOINT_PATH_VALUE=\"${LBM_CHECKPOINT_PATH}\"
+    RESTART_PATH_VALUE=\"${LBM_RESTART_PATH}\"
 )
 
 if(LBM_PRECISION STREQUAL "double")

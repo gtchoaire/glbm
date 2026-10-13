@@ -21,3 +21,5 @@ CMakeUserPresets.json
 cmake-build-*/
 /.autotune/
 /build-autotune/
+*.glbm
+*.glbm.tmp

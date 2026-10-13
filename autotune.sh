@@ -68,13 +68,22 @@ num_gpus="$(read_case_value num_gpus)"
 precision="$(read_case_value precision)"
 nz=$((nx * sar / num_gpus))
 
+visible_devices=""
+for ((device_offset=0; device_offset<num_gpus; ++device_offset)); do
+    physical_device=$((gpu_index + device_offset))
+    if [[ -n "${visible_devices}" ]]; then
+        visible_devices+=","
+    fi
+    visible_devices+="${physical_device}"
+done
+
 if [[ "${precision}" == "double" ]]; then
     scalar_bytes=8
 else
     scalar_bytes=4
 fi
 
-gpu_record="$(nvidia-smi -i "${gpu_index}" --query-gpu=uuid,name,compute_cap,driver_version --format=csv,noheader,nounits)"
+gpu_record="$(nvidia-smi -i "${visible_devices}" --query-gpu=uuid,name,compute_cap,driver_version --format=csv,noheader,nounits)"
 cuda_record="$(nvcc --version | sed -n 's/.*release \([^,]*\).*/\1/p')"
 source_record="$({
     sha256sum "${project_dir}/CMakeLists.txt"
@@ -89,7 +98,8 @@ build_root="${project_dir}/build-autotune/${cache_key}"
 mkdir -p "${cache_dir}" "${build_root}"
 
 printf 'GPU: %s\n' "${gpu_record}"
-printf 'Case: %s (domain %sx%sx%s, %s)\n' "${case_file}" "${nx}" "${nx}" "${nz}" "${precision}"
+printf 'Case: %s (global domain %sx%sx%s, local Z=%s, %s)\n' \
+    "${case_file}" "${nx}" "${nx}" "$((nx * sar))" "${nz}" "${precision}"
 
 if [[ -f "${result_file}" && ${force_retune} -eq 0 ]]; then
     # The file is generated locally below and contains integer assignments only.
@@ -127,13 +137,14 @@ else
             -DLBM_BLOCK_Z_OVERRIDE="${bz}" \
             -DLBM_SIMULATION_STEPS_OVERRIDE="${tuning_steps}" \
             -DLBM_PRINT_INTERVAL_OVERRIDE="${tuning_steps}" \
+            -DLBM_CHECKPOINT_INTERVAL_OVERRIDE=0 \
             -DLBM_SAVE_VTI_OVERRIDE=false >/dev/null
         cmake --build "${candidate_build}" --parallel >/dev/null
 
         total_mlups=0
         valid_runs=0
         for ((run=1; run<=repetitions; ++run)); do
-            if ! output="$(CUDA_VISIBLE_DEVICES="${gpu_index}" "${candidate_build}/glbm" 2>&1)"; then
+            if ! output="$(CUDA_VISIBLE_DEVICES="${visible_devices}" "${candidate_build}/glbm" 2>&1)"; then
                 printf 'Candidate %s failed during run %s.\n%s\n' \
                     "${candidate}" "${run}" "${output}" >&2
                 exit 1
@@ -186,5 +197,5 @@ cmake --build "${production_build}" --parallel >/dev/null
 printf 'Tuned executable: %s\n' "${production_build}/glbm"
 
 if ((run_after_tuning)); then
-    exec env CUDA_VISIBLE_DEVICES="${gpu_index}" "${production_build}/glbm"
+    exec env CUDA_VISIBLE_DEVICES="${visible_devices}" "${production_build}/glbm"
 fi

@@ -5,12 +5,20 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include PROPERTIES
 
-bool writeVti(const LBMState &state, const int step)
+bool writeVti(const std::vector<LBMState *> &states, const int step)
 {
+    if (states.size() != static_cast<size_t>(NUM_GPUS))
+    {
+        std::cerr << "Expected " << NUM_GPUS << " VTI subdomain(s), got "
+                  << states.size() << ".\n";
+        return false;
+    }
+
     const std::filesystem::path output_directory("output");
     std::error_code error;
     std::filesystem::create_directories(output_directory, error);
@@ -32,47 +40,49 @@ bool writeVti(const LBMState &state, const int step)
         return false;
     }
 
-    file << std::setprecision(sizeof(dfloat));
+    file << std::setprecision(std::numeric_limits<dfloat>::max_digits10);
     file << "<?xml version=\"1.0\"?>\n"
          << "<VTKFile type=\"ImageData\" version=\"0.1\" "
             "byte_order=\"LittleEndian\">\n"
-         << "  <ImageData WholeExtent=\"0 " << NX - 1
-         << " 0 " << NY - 1 << " 0 " << NZ - 1
+         << "  <ImageData WholeExtent=\"0 " << GLOBAL_NX - 1
+         << " 0 " << GLOBAL_NY - 1 << " 0 " << GLOBAL_NZ - 1
          << "\" Origin=\"0 0 0\" Spacing=\"1 1 1\">\n"
-         << "    <Piece Extent=\"0 " << NX - 1
-         << " 0 " << NY - 1 << " 0 " << NZ - 1 << "\">\n"
+         << "    <Piece Extent=\"0 " << GLOBAL_NX - 1
+         << " 0 " << GLOBAL_NY - 1 << " 0 " << GLOBAL_NZ - 1 << "\">\n"
          << "      <PointData Scalars=\"density\" Vectors=\"velocity\">\n"
          << "        <DataArray type=\""
-         << (sizeof(dfloat))
+         << (sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64")
          << "\" Name=\"density\" format=\"ascii\">\n";
 
-    for (int z = 0; z < NZ; ++z)
-        for (int y = 0; y < NY; ++y)
-            for (int x = 0; x < NX; ++x)
-            {
-                const size_t index = idxScalarBlock(
-                    x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
-                    x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
-                file << RHO_0 + state.host(M_RHO_INDEX, index) << ' ';
-            }
+    for (const LBMState *state : states)
+        for (int z = 0; z < NZ; ++z)
+            for (int y = 0; y < NY; ++y)
+                for (int x = 0; x < NX; ++x)
+                {
+                    const size_t index = idxScalarBlock(
+                        x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
+                        x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
+                    file << RHO_0 + state->host(M_RHO_INDEX, index) << ' ';
+                }
 
     file << "\n        </DataArray>\n"
          << "        <DataArray type=\""
-         << (sizeof(dfloat))
+         << (sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64")
          << "\" Name=\"velocity\" NumberOfComponents=\"3\" "
             "format=\"ascii\">\n";
 
-    for (int z = 0; z < NZ; ++z)
-        for (int y = 0; y < NY; ++y)
-            for (int x = 0; x < NX; ++x)
-            {
-                const size_t index = idxScalarBlock(
-                    x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
-                    x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
-                file << state.host(M_UX_INDEX, index) / F_M_I_SCALE << ' '
-                     << state.host(M_UY_INDEX, index) / F_M_I_SCALE << ' '
-                     << state.host(M_UZ_INDEX, index) / F_M_I_SCALE << ' ';
-            }
+    for (const LBMState *state : states)
+        for (int z = 0; z < NZ; ++z)
+            for (int y = 0; y < NY; ++y)
+                for (int x = 0; x < NX; ++x)
+                {
+                    const size_t index = idxScalarBlock(
+                        x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
+                        x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
+                    file << state->host(M_UX_INDEX, index) / F_M_I_SCALE << ' '
+                         << state->host(M_UY_INDEX, index) / F_M_I_SCALE << ' '
+                         << state->host(M_UZ_INDEX, index) / F_M_I_SCALE << ' ';
+                }
 
     file << "\n        </DataArray>\n"
          << "      </PointData>\n"
