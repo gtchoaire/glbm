@@ -96,7 +96,7 @@ if [[ -f "${result_file}" && ${force_retune} -eq 0 ]]; then
     source "${result_file}"
     printf 'Cached block: %sx%sx%s (%s MLUPS)\n' "${BEST_BLOCK_X}" "${BEST_BLOCK_Y}" "${BEST_BLOCK_Z}" "${BEST_MLUPS}"
 else
-    candidates_string="${GLBM_AUTOTUNE_CANDIDATES:-32x2x2 32x4x1 32x2x4 32x4x2 32x8x1 64x1x2 64x2x1 64x2x2 32x4x4 32x8x2}"
+    candidates_string="${GLBM_AUTOTUNE_CANDIDATES:-16x4x1 16x4x2 16x2x4 16x8x1 32x1x2 32x1x4 32x2x2 32x4x1 32x2x4 32x4x2 32x8x1 64x1x2 64x2x1 64x2x2 32x4x4 32x8x2}"
     read -r -a candidates <<< "${candidates_string}"
     best_mlups=0
     best_block=""

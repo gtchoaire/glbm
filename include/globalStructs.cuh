@@ -39,17 +39,14 @@ struct LBMState
     dfloat *h_moments = nullptr;
     dfloat *d_moments = nullptr;
 
-    __host__ __device__ static size_t storageIndex(
-        const int moment, const size_t scalar_index)
+    __host__ __device__ static size_t storageIndex(const int moment, const size_t scalar_index)
     {
         const size_t block = scalar_index / BLOCK_LBM_SIZE;
         const size_t node = scalar_index - block * BLOCK_LBM_SIZE;
-        return node + BLOCK_LBM_SIZE *
-            (static_cast<size_t>(moment) + NUMBER_MOMENTS * block);
+        return node + BLOCK_LBM_SIZE * (static_cast<size_t>(moment) + NUMBER_MOMENTS * block);
     }
 
-    __host__ __device__ dfloat &device(
-        const int moment, const size_t scalar_index) const
+    __host__ __device__ dfloat &device(const int moment, const size_t scalar_index) const
     {
         return d_moments[storageIndex(moment, scalar_index)];
     }

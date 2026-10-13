@@ -42,6 +42,30 @@ __device__ inline void reconstructPostCollisionPopulationsFromMoments(
         populations);
 }
 
+__device__ __forceinline__ bool crossesABTileCoordinate(
+    const int coordinate,
+    const int lattice_velocity,
+    const int tile_size)
+{
+    const int source_in_tile = coordinate % tile_size - lattice_velocity;
+    return source_in_tile < 0 || source_in_tile >= tile_size;
+}
+
+__device__ __forceinline__ bool usesInitialWallPopulation(
+    const int source_x, const int source_y, const int source_z,
+    const bool crosses_x_tile,
+    const bool crosses_y_tile,
+    const bool crosses_z_tile)
+{
+    const bool crosses_x_wall = source_x < 0 || source_x >= NX;
+    const bool crosses_y_wall = source_y < 0 || source_y >= NY;
+    const bool crosses_z_wall = source_z < 0 || source_z >= NZ;
+
+    // Preserve the AB halo ownership order: z, then y, then x.
+    return (crosses_z_tile && crosses_z_wall) || (!crosses_z_tile && crosses_y_tile && crosses_y_wall) ||
+        (!crosses_z_tile && !crosses_y_tile && crosses_x_tile && crosses_x_wall);
+}
+
 __device__ inline dfloat reconstructPostCollisionPopulation(
     const LBMState &source,
     const size_t source_index,
@@ -110,12 +134,11 @@ __global__ void gpuInitializeWallPopulations(
         initial_wall_populations, false);
 }
 
-__global__ void gpuMomCollisionStreamAB(
+__global__ void gpuBootstrapABState(
     LBMState source,
     LBMState destination,
     const unsigned int *node_type,
-    const RemotePopulationHalos remote_halos,
-    const bool initial_step)
+    const RemotePopulationHalos remote_halos)
 {
     const int x = threadIdx.x + blockDim.x * blockIdx.x;
     const int y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -132,50 +155,28 @@ __global__ void gpuMomCollisionStreamAB(
 #pragma unroll
     for (int i = 0; i < Q; ++i)
     {
-        const int unwrapped_source_x = x - static_cast<int>(cx[i]);
-        const int unwrapped_source_y = y - static_cast<int>(cy[i]);
-        const int unwrapped_source_z = z - static_cast<int>(cz[i]);
+        const int velocity_x = static_cast<int>(cx[i]);
+        const int velocity_y = static_cast<int>(cy[i]);
+        const int velocity_z = static_cast<int>(cz[i]);
+        const int unwrapped_source_x = x - velocity_x;
+        const int unwrapped_source_y = y - velocity_y;
+        const int unwrapped_source_z = z - velocity_z;
+
+        const bool crosses_x_tile = crossesABTileCoordinate(x, velocity_x, AB_TILE_NX);
+        const bool crosses_y_tile = crossesABTileCoordinate(y, velocity_y, AB_TILE_NY);
+        const bool crosses_z_tile = crossesABTileCoordinate(z, velocity_z, AB_TILE_NZ);
+        const bool crosses_tile = crosses_x_tile || crosses_y_tile || crosses_z_tile;
+
+        if (usesInitialWallPopulation(unwrapped_source_x, unwrapped_source_y, unwrapped_source_z, crosses_x_tile, crosses_y_tile, crosses_z_tile))
+        {
+            pop[i] = remote_halos.initial_wall[i];
+            continue;
+        }
 
         const int source_x = (unwrapped_source_x + NX) % NX;
         const int source_y = (unwrapped_source_y + NY) % NY;
         const int source_z = (unwrapped_source_z + NZ) % NZ;
-
-        const bool crosses_x_tile =
-            source_x / AB_TILE_NX != x / AB_TILE_NX;
-        const bool crosses_y_tile =
-            source_y / AB_TILE_NY != y / AB_TILE_NY;
-        const bool crosses_z_tile =
-            source_z / AB_TILE_NZ != z / AB_TILE_NZ;
-
-        const bool crosses_tile =
-            crosses_x_tile || crosses_y_tile || crosses_z_tile;
-
-        if (crosses_tile)
-        {
-            const bool crosses_physical_x_wall =
-                unwrapped_source_x < 0 || unwrapped_source_x >= NX;
-            const bool crosses_physical_y_wall =
-                unwrapped_source_y < 0 || unwrapped_source_y >= NY;
-            const bool crosses_physical_z_wall =
-                unwrapped_source_z < 0 || unwrapped_source_z >= NZ;
-
-            const bool reads_initialized_wall_population =
-                (crosses_z_tile && crosses_physical_z_wall) ||
-                (!crosses_z_tile && crosses_y_tile &&
-                 crosses_physical_y_wall) ||
-                (!crosses_z_tile && !crosses_y_tile && crosses_x_tile &&
-                 crosses_physical_x_wall);
-
-            if (reads_initialized_wall_population)
-            {
-                pop[i] = remote_halos.initial_wall[i];
-                continue;
-            }
-        }
-
-        pop[i] = reconstructPostCollisionPopulation(
-            source, blockedIndex(source_x, source_y, source_z),
-            i, !(initial_step && crosses_tile));
+        pop[i] = reconstructPostCollisionPopulation(source, blockedIndex(source_x, source_y, source_z), i, !crosses_tile);
     }
 
     dfloat rho;
@@ -259,48 +260,31 @@ __global__ void gpuStreamMomentsAB(
 
     __shared__ dfloat shared_moments[NUMBER_MOMENTS * SHARED_HALO_SIZE];
 
-    const int thread_index =
-        threadIdx.x + BLOCK_NX *
-            (threadIdx.y + BLOCK_NY * threadIdx.z);
+    const int thread_index = threadIdx.x + BLOCK_NX *(threadIdx.y + BLOCK_NY * threadIdx.z);
 
     for (int halo_index = thread_index;
          halo_index < SHARED_HALO_SIZE;
          halo_index += BLOCK_LBM_SIZE)
     {
         const int halo_x = halo_index % SHARED_HALO_NX;
-        const int halo_y =
-            (halo_index / SHARED_HALO_NX) % SHARED_HALO_NY;
-        const int halo_z =
-            halo_index / (SHARED_HALO_NX * SHARED_HALO_NY);
+        const int halo_y = (halo_index / SHARED_HALO_NX) % SHARED_HALO_NY;
+        const int halo_z = halo_index / (SHARED_HALO_NX * SHARED_HALO_NY);
 
-        const int source_x =
-            (static_cast<int>(blockIdx.x) * BLOCK_NX + halo_x - 1 + NX) % NX;
-        const int source_y =
-            (static_cast<int>(blockIdx.y) * BLOCK_NY + halo_y - 1 + NY) % NY;
-        const int source_z =
-            (static_cast<int>(blockIdx.z) * BLOCK_NZ + halo_z - 1 + NZ) % NZ;
+        const int source_x = (static_cast<int>(blockIdx.x) * BLOCK_NX + halo_x - 1 + NX) % NX;
+        const int source_y = (static_cast<int>(blockIdx.y) * BLOCK_NY + halo_y - 1 + NY) % NY;
+        const int source_z = (static_cast<int>(blockIdx.z) * BLOCK_NZ + halo_z - 1 + NZ) % NZ;
         const size_t source_index = blockedIndex(source_x, source_y, source_z);
 
-        shared_moments[M_RHO_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_RHO_INDEX, source_index);
-        shared_moments[M_UX_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_UX_INDEX, source_index);
-        shared_moments[M_UY_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_UY_INDEX, source_index);
-        shared_moments[M_UZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_UZ_INDEX, source_index);
-        shared_moments[M_MXX_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_MXX_INDEX, source_index);
-        shared_moments[M_MXY_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_MXY_INDEX, source_index);
-        shared_moments[M_MXZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_MXZ_INDEX, source_index);
-        shared_moments[M_MYY_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_MYY_INDEX, source_index);
-        shared_moments[M_MYZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_MYZ_INDEX, source_index);
-        shared_moments[M_MZZ_INDEX * SHARED_HALO_SIZE + halo_index] =
-            source.device(M_MZZ_INDEX, source_index);
+        shared_moments[M_RHO_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_RHO_INDEX, source_index);
+        shared_moments[M_UX_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_UX_INDEX, source_index);
+        shared_moments[M_UY_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_UY_INDEX, source_index);
+        shared_moments[M_UZ_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_UZ_INDEX, source_index);
+        shared_moments[M_MXX_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_MXX_INDEX, source_index);
+        shared_moments[M_MXY_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_MXY_INDEX, source_index);
+        shared_moments[M_MXZ_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_MXZ_INDEX, source_index);
+        shared_moments[M_MYY_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_MYY_INDEX, source_index);
+        shared_moments[M_MYZ_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_MYZ_INDEX, source_index);
+        shared_moments[M_MZZ_INDEX * SHARED_HALO_SIZE + halo_index] = source.device(M_MZZ_INDEX, source_index);
     }
 
     __syncthreads();
@@ -315,49 +299,30 @@ __global__ void gpuStreamMomentsAB(
 #pragma unroll
     for (int i = 0; i < Q; ++i)
     {
-        const int unwrapped_source_x = x - static_cast<int>(cx[i]);
-        const int unwrapped_source_y = y - static_cast<int>(cy[i]);
-        const int unwrapped_source_z = z - static_cast<int>(cz[i]);
+        const int velocity_x = static_cast<int>(cx[i]);
+        const int velocity_y = static_cast<int>(cy[i]);
+        const int velocity_z = static_cast<int>(cz[i]);
+        const int unwrapped_source_x = x - velocity_x;
+        const int unwrapped_source_y = y - velocity_y;
+        const int unwrapped_source_z = z - velocity_z;
 
-        const int tile_source_x = tile_x - static_cast<int>(cx[i]);
-        const int tile_source_y = tile_y - static_cast<int>(cy[i]);
-        const int tile_source_z = tile_z - static_cast<int>(cz[i]);
-        const bool crosses_x_tile =
-            tile_source_x < 0 || tile_source_x >= AB_TILE_NX;
-        const bool crosses_y_tile =
-            tile_source_y < 0 || tile_source_y >= AB_TILE_NY;
-        const bool crosses_z_tile =
-            tile_source_z < 0 || tile_source_z >= AB_TILE_NZ;
+        const int tile_source_x = tile_x - velocity_x;
+        const int tile_source_y = tile_y - velocity_y;
+        const int tile_source_z = tile_z - velocity_z;
+        const bool crosses_x_tile = tile_source_x < 0 || tile_source_x >= AB_TILE_NX;
+        const bool crosses_y_tile = tile_source_y < 0 || tile_source_y >= AB_TILE_NY;
+        const bool crosses_z_tile = tile_source_z < 0 || tile_source_z >= AB_TILE_NZ;
 
-        const bool crosses_physical_x_wall =
-            unwrapped_source_x < 0 || unwrapped_source_x >= NX;
-        const bool crosses_physical_y_wall =
-            unwrapped_source_y < 0 || unwrapped_source_y >= NY;
-        const bool crosses_physical_z_wall =
-            unwrapped_source_z < 0 || unwrapped_source_z >= NZ;
-
-        const bool reads_initialized_wall_population =
-            (crosses_z_tile && crosses_physical_z_wall) ||
-            (!crosses_z_tile && crosses_y_tile &&
-             crosses_physical_y_wall) ||
-            (!crosses_z_tile && !crosses_y_tile && crosses_x_tile &&
-             crosses_physical_x_wall);
-
-        if (reads_initialized_wall_population)
+        if (usesInitialWallPopulation(unwrapped_source_x, unwrapped_source_y, unwrapped_source_z, crosses_x_tile, crosses_y_tile, crosses_z_tile))
         {
             pop[i] = remote_halos.initial_wall[i];
             continue;
         }
 
-        const int shared_x =
-            static_cast<int>(threadIdx.x) + 1 - static_cast<int>(cx[i]);
-        const int shared_y =
-            static_cast<int>(threadIdx.y) + 1 - static_cast<int>(cy[i]);
-        const int shared_z =
-            static_cast<int>(threadIdx.z) + 1 - static_cast<int>(cz[i]);
-        const int shared_index =
-            shared_x + SHARED_HALO_NX *
-                (shared_y + SHARED_HALO_NY * shared_z);
+        const int shared_x = static_cast<int>(threadIdx.x) + 1 - static_cast<int>(cx[i]);
+        const int shared_y = static_cast<int>(threadIdx.y) + 1 - static_cast<int>(cy[i]);
+        const int shared_z = static_cast<int>(threadIdx.z) + 1 - static_cast<int>(cz[i]);
+        const int shared_index = shared_x + SHARED_HALO_NX * (shared_y + SHARED_HALO_NY * shared_z);
 
         pop[i] = reconstructCollidedPopulation(
             shared_moments, shared_index, i);

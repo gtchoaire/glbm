@@ -168,6 +168,25 @@ if(NOT LBM_PRECISION STREQUAL "float" AND NOT LBM_PRECISION STREQUAL "double")
     message(FATAL_ERROR "precision must be either 'float' or 'double'")
 endif()
 
+# gpuStreamMomentsAB keeps the ten macroscopic moments in a one-cell shared
+# halo.  Static shared memory is limited to 48 KiB on the supported launch
+# path, so reject an incompatible block during configuration instead of
+# letting nvlink fail later with a less actionable message.
+if(LBM_PRECISION STREQUAL "double")
+    set(LBM_SCALAR_BYTES 8)
+else()
+    set(LBM_SCALAR_BYTES 4)
+endif()
+math(EXPR LBM_STREAM_SHARED_BYTES
+    "(${LBM_BLOCK_X} + 2) * (${LBM_BLOCK_Y} + 2) * (${LBM_BLOCK_Z} + 2) * 10 * ${LBM_SCALAR_BYTES}")
+if(LBM_STREAM_SHARED_BYTES GREATER 49152)
+    message(FATAL_ERROR
+        "CUDA block ${LBM_BLOCK_X} x ${LBM_BLOCK_Y} x ${LBM_BLOCK_Z} with "
+        "precision '${LBM_PRECISION}' requires ${LBM_STREAM_SHARED_BYTES} "
+        "bytes of static shared memory; the supported maximum is 49152. "
+        "Choose a smaller block or run ./autotune.sh --retune --tune-only.")
+endif()
+
 if(NOT LBM_STENCIL MATCHES "^D[1-3]Q[0-9]+$")
     message(FATAL_ERROR "Invalid stencil name: ${LBM_STENCIL}")
 endif()
@@ -187,6 +206,7 @@ message(STATUS "GLBM domain: ${LBM_N_SIZE} x ${LBM_N_SIZE} x (${LBM_SAR} * ${LBM
 message(STATUS "GLBM GPUs: ${LBM_NUM_GPUS}")
 message(STATUS "GLBM precision: ${LBM_PRECISION}")
 message(STATUS "GLBM CUDA block: ${LBM_BLOCK_X} x ${LBM_BLOCK_Y} x ${LBM_BLOCK_Z}")
+message(STATUS "GLBM stream shared memory: ${LBM_STREAM_SHARED_BYTES} bytes/block")
 message(STATUS "GLBM progress interval: ${LBM_PRINT_INTERVAL}")
 message(STATUS "GLBM VTI output: ${LBM_SAVE_VTI}")
 

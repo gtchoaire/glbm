@@ -19,8 +19,8 @@ reconstruction_order = 2
 [cuda]
 block_x = 32
 block_y = 4
-block_z = 4
+block_z = 2
 
 [output]
-vti = true
+vti = false
 interval = 5000

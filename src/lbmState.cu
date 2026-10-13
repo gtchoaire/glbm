@@ -77,16 +77,14 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
 
 void allocateLBMState(LBMState &state)
 {
-    state.h_moments =
-        new (std::nothrow) dfloat[NUMBER_LBM_NODES * NUMBER_MOMENTS];
+    state.h_moments = new (std::nothrow) dfloat[NUMBER_LBM_NODES * NUMBER_MOMENTS];
     if (state.h_moments == nullptr)
     {
         std::printf("Failed to allocate the host LBM moments.\n");
         std::exit(EXIT_FAILURE);
     }
 
-    checkCuda(cudaMalloc(
-        reinterpret_cast<void **>(&state.d_moments), MEM_SIZE_MOM));
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&state.d_moments), MEM_SIZE_MOM));
 }
 
 void freeLBMState(LBMState &state)

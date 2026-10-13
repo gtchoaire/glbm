@@ -10,12 +10,13 @@
 #include "../src/colrec/D3Q27/evalMoments.cuh"
 #include "../src/colrec/D3Q27/boundary/secondOrder.cuh"
 
-__global__ void gpuMomCollisionStreamAB(
+// Builds the first post-collision AB state. This bootstrap path performs the
+// initial pull streaming and applies the physical boundary conditions.
+__global__ void gpuBootstrapABState(
     LBMState source,
     LBMState destination,
     const unsigned int *node_type,
-    RemotePopulationHalos remote_halos,
-    bool initial_step);
+    RemotePopulationHalos remote_halos);
 
 __global__ void gpuCollideMoments(LBMState state);
 

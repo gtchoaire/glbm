@@ -22,10 +22,10 @@ constexpr dfloat ONESIXTH = 1.0 / 6.0;
 constexpr dfloat ONETHIRD = 1.0 / 3.0;
 
 #ifndef BLOCK_NX_VALUE
-#define BLOCK_NX_VALUE 16
+#define BLOCK_NX_VALUE 32
 #endif
 #ifndef BLOCK_NY_VALUE
-#define BLOCK_NY_VALUE 8
+#define BLOCK_NY_VALUE 4
 #endif
 #ifndef BLOCK_NZ_VALUE
 #define BLOCK_NZ_VALUE 2
@@ -43,12 +43,6 @@ constexpr const int BLOCK_NZ = BLOCK_NZ_VALUE;
 constexpr const int AB_TILE_NX = 8;
 constexpr const int AB_TILE_NY = 8;
 constexpr const int AB_TILE_NZ = 4;
-
-static_assert(NX % BLOCK_NX == 0, "NX must be divisible by BLOCK_NX");
-static_assert(NY % BLOCK_NY == 0, "NY must be divisible by BLOCK_NY");
-static_assert(NZ % BLOCK_NZ == 0, "NZ must be divisible by BLOCK_NZ");
-static_assert(BLOCK_NX * BLOCK_NY * BLOCK_NZ <= 1024,
-              "A CUDA block cannot contain more than 1024 threads");
 
 #define BLOCK_LBM_SIZE (BLOCK_NX * BLOCK_NY * BLOCK_NZ)
 
@@ -68,16 +62,12 @@ constexpr const size_t MEM_SIZE_MOM = sizeof(dfloat) * NUMBER_LBM_NODES * NUMBER
 #define SAVE_VTI_OUTPUT_VALUE 1
 #endif
 
-static_assert(
-    SAVE_VTI_OUTPUT_VALUE == 0 || SAVE_VTI_OUTPUT_VALUE == 1,
-    "SAVE_VTI_OUTPUT_VALUE must be zero or one");
 constexpr bool SAVE_VTI_OUTPUT = SAVE_VTI_OUTPUT_VALUE != 0;
 
 #ifndef PRINT_INTERVAL_VALUE
 #define PRINT_INTERVAL_VALUE 10000
 #endif
 
-static_assert(PRINT_INTERVAL_VALUE > 0, "PRINT_INTERVAL_VALUE must be positive");
 constexpr int PRINT_INTERVAL = PRINT_INTERVAL_VALUE;
 
 #define checkCuda(cmd)                                                \

@@ -1,11 +1,11 @@
-#include "../include/output.h"
 
+#include "../include/globalFunctions.cuh"
+#include "../include/output.h"
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include "../include/globalFunctions.cuh"
 
 #include PROPERTIES
 
@@ -32,7 +32,7 @@ bool writeVti(const LBMState &state, const int step)
         return false;
     }
 
-    file << std::setprecision(sizeof(dfloat) == sizeof(float) ? 9 : 17);
+    file << std::setprecision(sizeof(dfloat));
     file << "<?xml version=\"1.0\"?>\n"
          << "<VTKFile type=\"ImageData\" version=\"0.1\" "
             "byte_order=\"LittleEndian\">\n"
@@ -43,7 +43,7 @@ bool writeVti(const LBMState &state, const int step)
          << " 0 " << NY - 1 << " 0 " << NZ - 1 << "\">\n"
          << "      <PointData Scalars=\"density\" Vectors=\"velocity\">\n"
          << "        <DataArray type=\""
-         << (sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64")
+         << (sizeof(dfloat))
          << "\" Name=\"density\" format=\"ascii\">\n";
 
     for (int z = 0; z < NZ; ++z)
@@ -58,7 +58,7 @@ bool writeVti(const LBMState &state, const int step)
 
     file << "\n        </DataArray>\n"
          << "        <DataArray type=\""
-         << (sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64")
+         << (sizeof(dfloat))
          << "\" Name=\"velocity\" NumberOfComponents=\"3\" "
             "format=\"ascii\">\n";
 
