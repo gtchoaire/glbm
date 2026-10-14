@@ -23,3 +23,6 @@ cmake-build-*/
 /build-autotune/
 *.glbm
 *.glbm.tmp
+.venv/
+__pycache__/
+*.pyc

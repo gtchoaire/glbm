@@ -1,10 +1,10 @@
 [domain]
-n_size = 256
+n_size = 512
 aspect_ratio = 1
 
 [simulation]
 num_gpus = 2
-steps = 100000
+steps = 10000000
 print_interval = 1000
 precision = "float"
 
@@ -25,7 +25,13 @@ block_z = 2
 vti = false
 interval = 100000
 
+binary = false
+binary_interval = 100000
+
+kinetic_energy = true
+kinetic_energy_interval = 5000
+
 [checkpoint]
-checkpoint_interval = 0
+checkpoint_interval = 50000
 checkpoint_path = "checkpoint.glbm"
-restart_path = ""
+restart_path = "checkpoint.glbm"

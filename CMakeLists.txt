@@ -1,48 +1,37 @@
 cmake_minimum_required(VERSION 3.24)
 
-find_program(NVIDIA_SMI_EXECUTABLE nvidia-smi REQUIRED)
+# Detect every installed GPU and emit native machine code only.  The "-real"
+# suffix avoids PTX JIT compatibility problems with older driver branches.
+find_program(NVIDIA_SMI nvidia-smi REQUIRED)
 execute_process(
-    COMMAND "${NVIDIA_SMI_EXECUTABLE}"
-            --query-gpu=compute_cap
-            --format=csv,noheader,nounits
-    RESULT_VARIABLE NVIDIA_SMI_RESULT
-    OUTPUT_VARIABLE NVIDIA_COMPUTE_CAPABILITIES
+    COMMAND "${NVIDIA_SMI}" --query-gpu=compute_cap --format=csv,noheader,nounits
+    RESULT_VARIABLE NVIDIA_SMI_STATUS
+    OUTPUT_VARIABLE GPU_COMPUTE_CAPABILITIES
     ERROR_VARIABLE NVIDIA_SMI_ERROR
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-if(NOT NVIDIA_SMI_RESULT EQUAL 0 OR NVIDIA_COMPUTE_CAPABILITIES STREQUAL "")
-    message(FATAL_ERROR
-        "Could not detect the CUDA architecture with nvidia-smi: "
-        "${NVIDIA_SMI_ERROR}")
+if(NOT NVIDIA_SMI_STATUS EQUAL 0 OR GPU_COMPUTE_CAPABILITIES STREQUAL "")
+    message(FATAL_ERROR "Could not detect the GPU architecture: ${NVIDIA_SMI_ERROR}")
 endif()
 
-string(REPLACE "\r" "" NVIDIA_COMPUTE_CAPABILITIES
-       "${NVIDIA_COMPUTE_CAPABILITIES}")
-string(REPLACE "\n" ";" NVIDIA_COMPUTE_CAPABILITIES
-       "${NVIDIA_COMPUTE_CAPABILITIES}")
-
+string(REPLACE "\n" ";" GPU_COMPUTE_CAPABILITIES
+    "${GPU_COMPUTE_CAPABILITIES}")
 set(DETECTED_CUDA_ARCHITECTURES)
-foreach(COMPUTE_CAPABILITY IN LISTS NVIDIA_COMPUTE_CAPABILITIES)
-    string(STRIP "${COMPUTE_CAPABILITY}" COMPUTE_CAPABILITY)
-    if(NOT COMPUTE_CAPABILITY MATCHES "^([0-9]+)\\.([0-9]+)$")
-        message(FATAL_ERROR
-            "Unexpected compute capability reported by nvidia-smi: "
-            "'${COMPUTE_CAPABILITY}'")
-    endif()
-    list(APPEND DETECTED_CUDA_ARCHITECTURES
-         "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+foreach(capability IN LISTS GPU_COMPUTE_CAPABILITIES)
+    string(STRIP "${capability}" capability)
+    string(REPLACE "." "" capability "${capability}")
+    list(APPEND DETECTED_CUDA_ARCHITECTURES "${capability}-real")
 endforeach()
 list(REMOVE_DUPLICATES DETECTED_CUDA_ARCHITECTURES)
 
-# Replace stale values in an existing build cache with the architecture(s)
-# detected from the local GPU(s).
+# FORCE replaces stale architecture values in existing build directories.
 set(CMAKE_CUDA_ARCHITECTURES "${DETECTED_CUDA_ARCHITECTURES}" CACHE STRING
-    "CUDA architectures detected from the local GPU(s)" FORCE)
+    "CUDA architectures detected from the installed GPU(s)" FORCE)
 
 project(glbm LANGUAGES CXX CUDA)
 
-message(STATUS "GLBM CUDA architecture(s): ${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,188 +39,86 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 set(LBM_CONFIG_FILE "${CMAKE_SOURCE_DIR}/case.toml" CACHE FILEPATH
-    "TOML file containing the simulation configuration")
-get_filename_component(LBM_CONFIG_FILE "${LBM_CONFIG_FILE}" ABSOLUTE
-    BASE_DIR "${CMAKE_SOURCE_DIR}")
+    "Simulation configuration file")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${LBM_CONFIG_FILE}")
 
 if(NOT EXISTS "${LBM_CONFIG_FILE}")
-    message(FATAL_ERROR "Simulation configuration not found: ${LBM_CONFIG_FILE}")
+    message(FATAL_ERROR "Configuration file not found: ${LBM_CONFIG_FILE}")
 endif()
 
-# Reconfigure automatically when the selected case file changes.
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${LBM_CONFIG_FILE}")
-file(STRINGS "${LBM_CONFIG_FILE}" LBM_CONFIG_LINES)
+file(STRINGS "${LBM_CONFIG_FILE}" LBM_CONFIG)
 
-function(read_toml_value key output_variable)
-    unset(value)
-
-    foreach(line IN LISTS LBM_CONFIG_LINES)
-        # The current case format uses scalar values only. Sections are informative.
-        string(REGEX REPLACE "[ \t]*#.*$" "" line_without_comment "${line}")
-
-        if(line_without_comment MATCHES "^[ \t]*${key}[ \t]*=[ \t]*(.+)[ \t]*$")
+function(read_config key variable)
+    foreach(line IN LISTS LBM_CONFIG)
+        string(REGEX REPLACE "[ \t]*#.*$" "" line "${line}")
+        if(line MATCHES "^[ \t]*${key}[ \t]*=[ \t]*(.*)$")
             set(value "${CMAKE_MATCH_1}")
             string(STRIP "${value}" value)
             string(REGEX REPLACE "^\"(.*)\"$" "\\1" value "${value}")
-            break()
+            set(${variable} "${value}" PARENT_SCOPE)
+            return()
         endif()
     endforeach()
-
-    if(NOT DEFINED value)
-        message(FATAL_ERROR "Missing '${key}' in ${LBM_CONFIG_FILE}")
-    endif()
-
-    set(${output_variable} "${value}" PARENT_SCOPE)
+    message(FATAL_ERROR "Missing '${key}' in ${LBM_CONFIG_FILE}")
 endfunction()
 
-read_toml_value(num_gpus LBM_NUM_GPUS)
-read_toml_value(n_size LBM_N_SIZE)
-read_toml_value(aspect_ratio LBM_SAR)
-read_toml_value(steps LBM_SIMULATION_STEPS)
-read_toml_value(print_interval LBM_PRINT_INTERVAL)
-read_toml_value(precision LBM_PRECISION)
-read_toml_value(reynolds_number LBM_RE_NUMBER)
-read_toml_value(u_max LBM_U_MAX)
-read_toml_value(stencil LBM_STENCIL)
-read_toml_value(reconstruction_order LBM_ORDER)
-read_toml_value(block_x LBM_BLOCK_X)
-read_toml_value(block_y LBM_BLOCK_Y)
-read_toml_value(block_z LBM_BLOCK_Z)
-read_toml_value(vti LBM_SAVE_VTI)
-read_toml_value(interval LBM_OUTPUT_INTERVAL)
-read_toml_value(checkpoint_interval LBM_CHECKPOINT_INTERVAL)
-read_toml_value(checkpoint_path LBM_CHECKPOINT_PATH)
-read_toml_value(restart_path LBM_RESTART_PATH)
+read_config(num_gpus NUM_GPUS)
+read_config(n_size N_SIZE)
+read_config(aspect_ratio SAR)
+read_config(steps SIMULATION_STEPS)
+read_config(print_interval PRINT_INTERVAL)
+read_config(precision PRECISION)
+read_config(reynolds_number RE_NUMBER)
+read_config(u_max U_MAX)
+read_config(stencil STENCIL)
+read_config(reconstruction_order ORDER)
+read_config(block_x BLOCK_X)
+read_config(block_y BLOCK_Y)
+read_config(block_z BLOCK_Z)
+read_config(vti SAVE_VTI)
+read_config(interval OUTPUT_INTERVAL)
+read_config(binary SAVE_BINARY)
+read_config(binary_interval BINARY_OUTPUT_INTERVAL)
+read_config(kinetic_energy SAVE_KINETIC_ENERGY)
+read_config(kinetic_energy_interval KINETIC_ENERGY_INTERVAL)
+read_config(checkpoint_interval CHECKPOINT_INTERVAL)
+read_config(checkpoint_path CHECKPOINT_PATH)
+read_config(restart_path RESTART_PATH)
 
-# Optional command-line overrides used by the hardware autotuner.  Keeping
-# these values out of case.toml lets each candidate use the exact same case.
-foreach(parameter
-        NUM_GPUS
-        SIMULATION_STEPS
-        PRINT_INTERVAL
-        BLOCK_X
-        BLOCK_Y
-        BLOCK_Z
-        SAVE_VTI
-        CHECKPOINT_INTERVAL)
-    if(DEFINED LBM_${parameter}_OVERRIDE)
-        set(LBM_${parameter} "${LBM_${parameter}_OVERRIDE}")
+foreach(variable
+        NUM_GPUS SIMULATION_STEPS PRINT_INTERVAL
+        BLOCK_X BLOCK_Y BLOCK_Z SAVE_VTI SAVE_BINARY SAVE_KINETIC_ENERGY
+        KINETIC_ENERGY_INTERVAL CHECKPOINT_INTERVAL)
+    if(DEFINED LBM_${variable}_OVERRIDE)
+        set(${variable} "${LBM_${variable}_OVERRIDE}")
     endif()
 endforeach()
 
-foreach(parameter
-        LBM_NUM_GPUS
-        LBM_N_SIZE
-        LBM_SAR
-        LBM_SIMULATION_STEPS
-        LBM_PRINT_INTERVAL
-        LBM_ORDER
-        LBM_BLOCK_X
-        LBM_BLOCK_Y
-        LBM_BLOCK_Z
-        LBM_OUTPUT_INTERVAL)
-    if(NOT "${${parameter}}" MATCHES "^[1-9][0-9]*$")
-        message(FATAL_ERROR "${parameter} must be a positive integer")
-    endif()
-endforeach()
-
-if(NOT "${LBM_CHECKPOINT_INTERVAL}" MATCHES "^[0-9]+$")
-    message(FATAL_ERROR "checkpoint_interval must be a non-negative integer")
-endif()
-
-if(LBM_CHECKPOINT_INTERVAL GREATER 0 AND LBM_CHECKPOINT_PATH STREQUAL "")
-    message(FATAL_ERROR
-        "checkpoint_path must not be empty when checkpointing is enabled")
-endif()
-
-math(EXPR LBM_BLOCK_SIZE
-    "${LBM_BLOCK_X} * ${LBM_BLOCK_Y} * ${LBM_BLOCK_Z}")
-if(LBM_BLOCK_SIZE GREATER 1024)
-    message(FATAL_ERROR
-        "CUDA block has ${LBM_BLOCK_SIZE} threads; the maximum is 1024")
-endif()
-
-if(LBM_BLOCK_X GREATER 1024 OR
-   LBM_BLOCK_Y GREATER 1024 OR
-   LBM_BLOCK_Z GREATER 64)
-    message(FATAL_ERROR
-        "CUDA block dimensions exceed the hardware limits 1024 x 1024 x 64")
-endif()
-
-math(EXPR LBM_LOCAL_NZ "${LBM_N_SIZE} * ${LBM_SAR} / ${LBM_NUM_GPUS}")
-math(EXPR LBM_BLOCK_REMAINDER_X "${LBM_N_SIZE} % ${LBM_BLOCK_X}")
-math(EXPR LBM_BLOCK_REMAINDER_Y "${LBM_N_SIZE} % ${LBM_BLOCK_Y}")
-math(EXPR LBM_BLOCK_REMAINDER_Z "${LBM_LOCAL_NZ} % ${LBM_BLOCK_Z}")
-if(LBM_BLOCK_REMAINDER_X OR
-   LBM_BLOCK_REMAINDER_Y OR
-   LBM_BLOCK_REMAINDER_Z)
-    message(FATAL_ERROR
-        "The local domain must be divisible by the CUDA block dimensions")
-endif()
-
-math(EXPR LBM_LOCAL_BLOCKS_Z "${LBM_LOCAL_NZ} / ${LBM_BLOCK_Z}")
-if(LBM_NUM_GPUS GREATER 1 AND LBM_LOCAL_BLOCKS_Z LESS 3)
-    message(FATAL_ERROR
-        "Multi-GPU overlap requires at least three CUDA blocks along the "
-        "local Z dimension")
-endif()
-
-if(NOT LBM_RE_NUMBER MATCHES "^[0-9]+([.][0-9]+)?$")
-    message(FATAL_ERROR "reynolds_number must be a positive number")
-endif()
-
-if(NOT LBM_U_MAX MATCHES "^[0-9]+([.][0-9]+)?$")
-    message(FATAL_ERROR "u_max must be a positive number")
-endif()
-
-if(NOT LBM_PRECISION STREQUAL "float" AND NOT LBM_PRECISION STREQUAL "double")
-    message(FATAL_ERROR "precision must be either 'float' or 'double'")
-endif()
-
-# gpuStreamMomentsAB keeps the ten macroscopic moments in a one-cell shared
-# halo.  Static shared memory is limited to 48 KiB on the supported launch
-# path, so reject an incompatible block during configuration instead of
-# letting nvlink fail later with a less actionable message.
-if(LBM_PRECISION STREQUAL "double")
-    set(LBM_SCALAR_BYTES 8)
+if(SAVE_VTI)
+    set(SAVE_VTI 1)
 else()
-    set(LBM_SCALAR_BYTES 4)
-endif()
-math(EXPR LBM_STREAM_SHARED_BYTES
-    "(${LBM_BLOCK_X} + 2) * (${LBM_BLOCK_Y} + 2) * (${LBM_BLOCK_Z} + 2) * 10 * ${LBM_SCALAR_BYTES}")
-if(LBM_STREAM_SHARED_BYTES GREATER 49152)
-    message(FATAL_ERROR
-        "CUDA block ${LBM_BLOCK_X} x ${LBM_BLOCK_Y} x ${LBM_BLOCK_Z} with "
-        "precision '${LBM_PRECISION}' requires ${LBM_STREAM_SHARED_BYTES} "
-        "bytes of static shared memory; the supported maximum is 49152. "
-        "Choose a smaller block or run ./autotune.sh --retune --tune-only.")
+    set(SAVE_VTI 0)
 endif()
 
-if(NOT LBM_STENCIL MATCHES "^D[1-3]Q[0-9]+$")
-    message(FATAL_ERROR "Invalid stencil name: ${LBM_STENCIL}")
-endif()
-
-if(NOT LBM_SAVE_VTI STREQUAL "true" AND NOT LBM_SAVE_VTI STREQUAL "false")
-    message(FATAL_ERROR "vti must be either true or false")
-endif()
-
-if(LBM_SAVE_VTI STREQUAL "true")
-    set(LBM_SAVE_VTI_VALUE 1)
+if(SAVE_BINARY)
+    set(SAVE_BINARY 1)
 else()
-    set(LBM_SAVE_VTI_VALUE 0)
+    set(SAVE_BINARY 0)
 endif()
 
-message(STATUS "GLBM case file: ${LBM_CONFIG_FILE}")
-message(STATUS "GLBM domain: ${LBM_N_SIZE} x ${LBM_N_SIZE} x (${LBM_SAR} * ${LBM_N_SIZE})")
-message(STATUS "GLBM GPUs: ${LBM_NUM_GPUS}")
-message(STATUS "GLBM precision: ${LBM_PRECISION}")
-message(STATUS "GLBM CUDA block: ${LBM_BLOCK_X} x ${LBM_BLOCK_Y} x ${LBM_BLOCK_Z}")
-message(STATUS "GLBM stream shared memory: ${LBM_STREAM_SHARED_BYTES} bytes/block")
-message(STATUS "GLBM progress interval: ${LBM_PRINT_INTERVAL}")
-message(STATUS "GLBM VTI output: ${LBM_SAVE_VTI}")
-message(STATUS "GLBM checkpoint interval: ${LBM_CHECKPOINT_INTERVAL}")
-if(NOT LBM_RESTART_PATH STREQUAL "")
-    message(STATUS "GLBM restart file: ${LBM_RESTART_PATH}")
+if(SAVE_KINETIC_ENERGY)
+    set(SAVE_KINETIC_ENERGY 1)
+else()
+    set(SAVE_KINETIC_ENERGY 0)
+endif()
+
+if(NOT BINARY_OUTPUT_INTERVAL MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "binary_interval must be a positive integer")
+endif()
+
+if(NOT KINETIC_ENERGY_INTERVAL MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "kinetic_energy_interval must be a positive integer")
 endif()
 
 add_executable(glbm
@@ -245,7 +132,9 @@ add_executable(glbm
     src/simulation.cu
 )
 
-set_source_files_properties(src/checkpoint.cpp src/output.cpp PROPERTIES LANGUAGE CUDA)
+# These files include CUDA headers and device-side declarations.
+set_source_files_properties(src/checkpoint.cpp src/output.cpp
+    PROPERTIES LANGUAGE CUDA)
 
 target_include_directories(glbm PRIVATE include)
 
@@ -256,29 +145,31 @@ target_compile_options(glbm PRIVATE
 )
 
 target_compile_definitions(glbm PRIVATE
-    NUM_GPUS=${LBM_NUM_GPUS}
-    N_SIZE=${LBM_N_SIZE}
-    SAR=${LBM_SAR}
-    RE_NUMBER=${LBM_RE_NUMBER}
-    U_MAX_VALUE=${LBM_U_MAX}
-    SIMULATION_STEPS=${LBM_SIMULATION_STEPS}
-    PRINT_INTERVAL_VALUE=${LBM_PRINT_INTERVAL}
-    STENCIL=${LBM_STENCIL}
-    ORDER=${LBM_ORDER}
-    BLOCK_NX_VALUE=${LBM_BLOCK_X}
-    BLOCK_NY_VALUE=${LBM_BLOCK_Y}
-    BLOCK_NZ_VALUE=${LBM_BLOCK_Z}
-    SAVE_VTI_OUTPUT_VALUE=${LBM_SAVE_VTI_VALUE}
-    OUTPUT_INTERVAL=${LBM_OUTPUT_INTERVAL}
-    CHECKPOINT_INTERVAL_VALUE=${LBM_CHECKPOINT_INTERVAL}
-    CHECKPOINT_PATH_VALUE=\"${LBM_CHECKPOINT_PATH}\"
-    RESTART_PATH_VALUE=\"${LBM_RESTART_PATH}\"
+    NUM_GPUS=${NUM_GPUS}
+    N_SIZE=${N_SIZE}
+    SAR=${SAR}
+    RE_NUMBER=${RE_NUMBER}
+    U_MAX_VALUE=${U_MAX}
+    SIMULATION_STEPS=${SIMULATION_STEPS}
+    PRINT_INTERVAL_VALUE=${PRINT_INTERVAL}
+    STENCIL=${STENCIL}
+    ORDER=${ORDER}
+    BLOCK_NX_VALUE=${BLOCK_X}
+    BLOCK_NY_VALUE=${BLOCK_Y}
+    BLOCK_NZ_VALUE=${BLOCK_Z}
+    SAVE_VTI_OUTPUT_VALUE=${SAVE_VTI}
+    OUTPUT_INTERVAL=${OUTPUT_INTERVAL}
+    SAVE_BINARY_OUTPUT_VALUE=${SAVE_BINARY}
+    BINARY_OUTPUT_INTERVAL=${BINARY_OUTPUT_INTERVAL}
+    SAVE_KINETIC_ENERGY_OUTPUT_VALUE=${SAVE_KINETIC_ENERGY}
+    KINETIC_ENERGY_OUTPUT_INTERVAL=${KINETIC_ENERGY_INTERVAL}
+    CHECKPOINT_INTERVAL_VALUE=${CHECKPOINT_INTERVAL}
+    CHECKPOINT_PATH_VALUE=\"${CHECKPOINT_PATH}\"
+    RESTART_PATH_VALUE=\"${RESTART_PATH}\"
 )
 
-if(LBM_PRECISION STREQUAL "double")
+if(PRECISION STREQUAL "double")
     target_compile_definitions(glbm PRIVATE double_precision)
 endif()
 
-set_target_properties(glbm PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-)
+set_target_properties(glbm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

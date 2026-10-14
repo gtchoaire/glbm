@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include "../include/auxFunctions.cuh"
 #include "../include/checkpoint.h"
 #include "../include/definitions.h"
 #include "../include/lbmState.cuh"
@@ -15,7 +16,7 @@
 #include "../include/nodeType.h"
 #include "../include/output.h"
 
-namespace {
+
 
 double calculateMlups(const size_t nodes, const size_t steps, const double seconds) 
 {
@@ -33,26 +34,25 @@ void reportProgress(
   const auto eta_minutes = (eta % 3600) / 60;
   const auto eta_seconds = eta % 60;
 
-  std::printf("Step %010zu / %010d | %6.2f%% | "
+  std::printf("\rStep %010zu / %010d | %6.2f%% | "
               "MLUPS %6.0f | "
-              "ETA %02llu:%02llu:%02llu\n",
+              "ETA %02llu:%02llu:%02llu",
               completed_steps, N_STEPS, progress,
               calculateMlups(NUMBER_LBM_NODES * NUM_GPUS, executed_steps, solver_seconds),
               eta_hours, eta_minutes, eta_seconds);
+  std::fflush(stdout);
 }
-} // namespace
+
 
 void runSimulation() 
 {
 
-  if (!validateMultiGpuTopology())
+  std::filesystem::path output_directory;
+  if (!createOutputDirectory(output_directory) ||
+      !writeSimulationInfo(output_directory))
     std::exit(EXIT_FAILURE);
 
-  if (NUM_GPUS > 2) {
-    std::fprintf(stderr,
-      "This cavity implementation currently supports at most two GPUs.\n");
-    std::exit(EXIT_FAILURE);
-  }
+
   const dim3 block(BLOCK_NX, BLOCK_NY, BLOCK_NZ);
   const dim3 grid(NUM_BLOCK_X, NUM_BLOCK_Y, NUM_BLOCK_Z);
   std::vector<std::unique_ptr<DeviceDomain>> domains;
@@ -75,8 +75,7 @@ void runSimulation()
 
     allocateMomentHalos(domain);
     initializeEquilibrium(domain.state, grid, block);
-    gpuInitializeWallPopulations<<<1, 1>>>(
-      domain.state, domain.population_halos.remote.initial_wall);
+    gpuInitializeWallPopulations<<<1, 1>>>(domain.state, domain.population_halos.remote.initial_wall);
     checkCuda(cudaGetLastError());
     current.push_back(&domain.state);
     next.push_back(&domain.next_state);
@@ -148,11 +147,14 @@ void runSimulation()
     }
 
     completed_steps = step + 1;
-    const bool save_output = SAVE_VTI_OUTPUT && (completed_steps % OUTPUT_INTERVAL == 0 || completed_steps == N_STEPS);
-    const bool save_checkpoint = CHECKPOINT_INTERVAL > 0 &&
-      (completed_steps % CHECKPOINT_INTERVAL == 0 || completed_steps == N_STEPS);
+    const bool save_vti = SAVE_VTI_OUTPUT && (completed_steps % OUTPUT_INTERVAL == 0 || completed_steps == N_STEPS);
+    const bool save_binary = SAVE_BINARY_OUTPUT && (completed_steps % BINARY_OUTPUT_INTERVAL_VALUE == 0 || completed_steps == N_STEPS);
+    const bool save_kinetic_energy = SAVE_KINETIC_ENERGY_OUTPUT &&
+      (completed_steps % KINETIC_ENERGY_INTERVAL == 0 || completed_steps == N_STEPS);
+    const bool save_checkpoint = CHECKPOINT_INTERVAL > 0 && (completed_steps % CHECKPOINT_INTERVAL == 0 || completed_steps == N_STEPS);
     const bool print_progress = completed_steps % PRINT_INTERVAL == 0 || completed_steps == N_STEPS;
-    const bool measurement = save_output || save_checkpoint || print_progress;
+    const bool measurement = save_vti || save_binary || save_kinetic_energy ||
+      save_checkpoint || print_progress;
 
     if (measurement) 
     {
@@ -168,7 +170,7 @@ void runSimulation()
       solver_seconds += static_cast<double>(segment_milliseconds) * 1.0e-3;
     }
 
-    if (save_output || save_checkpoint)
+    if (save_vti || save_binary || save_kinetic_energy || save_checkpoint)
     {
       for (int subdomain_id = 0; subdomain_id < NUM_GPUS; ++subdomain_id) {
         checkCuda(cudaSetDevice(domains[subdomain_id]->device_id));
@@ -176,20 +178,28 @@ void runSimulation()
       }
     }
 
-    if (save_output)
+    if (save_vti)
     {
-      if (!writeVti(current, completed_steps))
+      if (!writeVti(current, completed_steps, output_directory))
+        std::exit(EXIT_FAILURE);
+    }
+
+    if (save_binary)
+    {
+      if (!writeBinaryFields(current, completed_steps, output_directory))
         std::exit(EXIT_FAILURE);
     }
 
     if (save_checkpoint)
       writeCheckpoint(current, completed_steps, CHECKPOINT_PATH);
 
+    if (save_kinetic_energy)
+      totalKineticEnergy(current, completed_steps, output_directory);
+
     if (print_progress) 
     {
       const double interval_solver_seconds = solver_seconds - solver_seconds_at_last_report;
-      reportProgress(
-        completed_steps, completed_steps - initial_step, solver_seconds);
+      reportProgress(completed_steps, completed_steps - initial_step, solver_seconds);
       solver_seconds_at_last_report = solver_seconds;
     }
     if (measurement && completed_steps < N_STEPS)
