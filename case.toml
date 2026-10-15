@@ -4,7 +4,7 @@ aspect_ratio = 1
 
 [simulation]
 num_gpus = 2
-steps = 10000000
+steps = 1000000
 print_interval = 1000
 precision = "float"
 
@@ -17,9 +17,9 @@ stencil = "D3Q27"
 reconstruction_order = 2
 
 [cuda]
-block_x = 32
+block_x = 64
 block_y = 4
-block_z = 2
+block_z = 1
 
 [output]
 vti = false
@@ -28,10 +28,13 @@ interval = 100000
 binary = false
 binary_interval = 100000
 
-kinetic_energy = true
+kinetic_energy = false
 kinetic_energy_interval = 5000
 
 [checkpoint]
-checkpoint_interval = 50000
+checkpoint_interval = 1000000
 checkpoint_path = "checkpoint.glbm"
-restart_path = "checkpoint.glbm"
+# To resume, use e.g. "output/yyyymmdd_hhmm/checkpoint.glbm".
+restart_path = ""
+
+# output/20261015_1023/checkpoint.glbm

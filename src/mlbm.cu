@@ -27,19 +27,10 @@ __device__ inline void reconstructPostCollisionPopulationsFromMoments(
     const dfloat ux, const dfloat uy, const dfloat uz,
     dfloat mxx, dfloat mxy, dfloat mxz,
     dfloat myy, dfloat myz, dfloat mzz,
-    dfloat *populations,
-    const bool collide_source_moments = true)
+    dfloat *populations)
 {
     const dfloat rho = RHO_0 + stored_rho;
-    if (collide_source_moments)
-        moment_collision(
-            rho, ux, uy, uz,
-            &mxx, &mxy, &mxz, &myy, &myz, &mzz);
-
-    pop_reconstruction(
-        rho, ux, uy, uz,
-        mxx, mxy, mxz, myy, myz, mzz,
-        populations);
+    pop_reconstruction(rho, ux, uy, uz, mxx, mxy, mxz, myy, myz, mzz, populations);
 }
 
 __device__ __forceinline__ bool crossesABTileCoordinate(
@@ -217,7 +208,7 @@ __global__ void gpuInitializeWallPopulations(
         source.device(M_MYY_INDEX, 0),
         source.device(M_MYZ_INDEX, 0),
         source.device(M_MZZ_INDEX, 0),
-        initial_wall_populations, false);
+        initial_wall_populations);
 }
 
 __global__ void gpuBootstrapABState(

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+build_dir="${GLBM_BUILD_DIR:-${project_dir}/build}"
+case_file="${GLBM_CASE_FILE:-${project_dir}/case.toml}"
+
+for command_name in cmake nvidia-smi nvcc; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        printf 'Required command not found: %s\n' "${command_name}" >&2
+        exit 1
+    fi
+done
+
+if [[ ! -f "${case_file}" ]]; then
+    printf 'Case file not found: %s\n' "${case_file}" >&2
+    exit 1
+fi
+
+printf 'Configuring GLBM in %s\n' "${build_dir}"
+cmake -S "${project_dir}" -B "${build_dir}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLBM_CONFIG_FILE="${case_file}"
+
+printf 'Building GLBM...\n'
+cmake --build "${build_dir}" --parallel
+
+printf 'Starting simulation...\n'
+cd "${build_dir}"
+exec ./glbm "$@"

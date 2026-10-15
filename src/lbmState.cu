@@ -19,14 +19,12 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
     if (x >= NX || y >= NY || z >= NZ)
         return;
 
-    const size_t index = idxScalarBlock(
-        threadIdx.x, threadIdx.y, threadIdx.z,
-        blockIdx.x, blockIdx.y, blockIdx.z);
+    const size_t index = idxScalarBlock(threadIdx.x, threadIdx.y, threadIdx.z, blockIdx.x, blockIdx.y, blockIdx.z);
 
-    const dfloat rho = RHO_0;
-    const dfloat ux = static_cast<dfloat>(0);
-    const dfloat uy = static_cast<dfloat>(0);
-    const dfloat uz = static_cast<dfloat>(0);
+    constexpr dfloat rho = RHO_0;
+    constexpr dfloat ux = static_cast<dfloat>(0);
+    constexpr dfloat uy = static_cast<dfloat>(0);
+    constexpr dfloat uz = static_cast<dfloat>(0);
 
     state.device(M_RHO_INDEX, index) = rho - RHO_0;
     state.device(M_UX_INDEX, index) = F_M_I_SCALE * ux;
@@ -43,7 +41,7 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
             static_cast<dfloat>(1) - static_cast<dfloat>(1.5) *
                 (ux * ux + uy * uy + uz * uz));
 
-    const dfloat inverse_rho = static_cast<dfloat>(1) / rho;
+    constexpr dfloat inverse_rho = static_cast<dfloat>(1) / rho;
     const dfloat mxx = (pop[1] + pop[2] + pop[7] + pop[8] + pop[9] +
         pop[10] + pop[13] + pop[14] + pop[15] + pop[16] + pop[19] +
         pop[20] + pop[21] + pop[22] + pop[23] + pop[24] + pop[25] +
@@ -79,10 +77,7 @@ void allocateLBMState(LBMState &state)
 {
     state.h_moments = new (std::nothrow) dfloat[NUMBER_LBM_NODES * NUMBER_MOMENTS];
     if (state.h_moments == nullptr)
-    {
-        std::printf("Failed to allocate the host LBM moments.\n");
-        std::exit(EXIT_FAILURE);
-    }
+        throw std::bad_alloc();
 
     checkCuda(cudaMalloc(reinterpret_cast<void **>(&state.d_moments), MEM_SIZE_MOM));
 }
@@ -99,9 +94,7 @@ void freeLBMState(LBMState &state)
 
 void copyMacroscopicFieldsToHost(LBMState &state)
 {
-    checkCuda(cudaMemcpy(
-        state.h_moments, state.d_moments,
-        MEM_SIZE_MOM, cudaMemcpyDeviceToHost));
+    checkCuda(cudaMemcpy(state.h_moments, state.d_moments, MEM_SIZE_MOM, cudaMemcpyDeviceToHost));
 }
 
 void initializeEquilibrium(LBMState &state, const dim3 grid, const dim3 block)

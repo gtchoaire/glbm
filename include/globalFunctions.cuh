@@ -8,14 +8,14 @@
 
 // f_i^eq = rho w_i (1 + 3(u*ci) + 9/2(u*ci)^2 - 3/2(u*u))
 __host__ __device__
-    dfloat __forceinline__
+    constexpr dfloat __forceinline__
     f_eq(const dfloat rhow, const dfloat uc3, const dfloat p1_muu)
 {
     return (rhow * (p1_muu + uc3 * (1.0 + uc3 * 0.5)));
 }
 
 __host__ __device__
-    size_t __forceinline__
+    constexpr size_t __forceinline__
     idxMom(
         const int tx,
         const int ty,
@@ -29,7 +29,7 @@ __host__ __device__
 }
 
 __host__ __device__
-    size_t __forceinline__
+    constexpr size_t __forceinline__
     idxPopBlock(const unsigned int tx, const unsigned int ty, const unsigned int tz, const unsigned int pop)
 {
 
@@ -37,7 +37,7 @@ __host__ __device__
 }
 
 __host__ __device__
-    size_t __forceinline__
+    constexpr size_t __forceinline__
     idxScalarBlock(
         const int tx,
         const int ty,
@@ -63,7 +63,7 @@ __host__ __device__
 }
 
 __host__ __device__
-    size_t __forceinline__
+    constexpr size_t __forceinline__
     idxScalarGlobal(unsigned int x, unsigned int y, unsigned int z)
 {
     return x + NX * (y + NY * (z));

@@ -6,7 +6,7 @@
 
 namespace
 {
-unsigned int nodeTypeAt(
+constexpr unsigned int nodeTypeAt(
     const int x, const int y, const int local_z,
     const SubDomainInfo &subdomain)
 {
@@ -21,8 +21,7 @@ unsigned int nodeTypeAt(
     if (x == 0) type |= WEST;
     if (x == NX - 1) type |= EAST;
     if (subdomain.has_back_wall && global_z == 0) type |= BACK;
-    if (subdomain.has_front_wall && global_z == subdomain.global_nz - 1)
-        type |= FRONT;
+    if (subdomain.has_front_wall && global_z == subdomain.global_nz - 1) type |= FRONT;
 
     return type;
 }
@@ -39,18 +38,13 @@ bool initializeNodeTypes(DeviceDomain &domain)
         for (int y = 0; y < NY; ++y)
             for (int x = 0; x < NX; ++x)
             {
-                const size_t index = idxScalarBlock(x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
+                const size_t index = idxScalarBlock(x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ, x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
                 domain.h_node_type[index] = nodeTypeAt(x, y, z, domain.info);
             }
 
-    const size_t bytes = NUMBER_LBM_NODES * sizeof(unsigned int);
+    constexpr size_t bytes = NUMBER_LBM_NODES * sizeof(unsigned int);
     checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.d_node_type), bytes));
     checkCuda(cudaMemcpy(domain.d_node_type, domain.h_node_type, bytes, cudaMemcpyHostToDevice));
-    if (cudaGetLastError() != cudaSuccess)
-    {
-        freeNodeTypes(domain);
-        return false;
-    }
     return true;
 }
 

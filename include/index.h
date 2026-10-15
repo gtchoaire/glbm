@@ -17,6 +17,6 @@ constexpr int M_MZZ_INDEX = 9;
 #endif
 #define M_OFFSET M_MZZ_INDEX
 
-const size_t NUMBER_MOMENTS = M_OFFSET + 1;
+inline constexpr size_t NUMBER_MOMENTS = M_OFFSET + 1;
 
 #endif

@@ -16,9 +16,10 @@
 
 namespace
 {
-constexpr int CHECKPOINT_VERSION = 1;
+constexpr int CHECKPOINT_VERSION = 2;
+constexpr int MIN_SUPPORTED_CHECKPOINT_VERSION = 1;
 
-const char *precisionName()
+constexpr const char *precisionName()
 {
     return (sizeof(dfloat)) == sizeof(float) ? "float32" : "float64";
 }
@@ -51,7 +52,7 @@ void parseLine(
     require(parser.eof(), "extra value in '" + std::string(expected_key) + "'");
 }
 
-size_t scalarIndex(const int x, const int y, const int z)
+constexpr size_t scalarIndex(const int x, const int y, const int z)
 {
     return idxScalarBlock(x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ, x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
 }
@@ -60,7 +61,8 @@ size_t scalarIndex(const int x, const int y, const int z)
 void writeCheckpoint(
     const std::vector<LBMState *> &states,
     const size_t completed_step,
-    const std::string &path_string)
+    const std::string &path_string,
+    const std::filesystem::path &output_directory)
 {
     require(states.size() == static_cast<size_t>(NUM_GPUS), "incorrect number of subdomains while writing");
 
@@ -84,6 +86,9 @@ void writeCheckpoint(
            << std::setprecision(std::numeric_limits<dfloat>::max_digits10)
            << "reynolds " << RE << '\n'
            << "u_max " << U_MAX << '\n'
+           << "output_directory "
+           << std::quoted(std::filesystem::absolute(output_directory)
+                              .lexically_normal().string()) << '\n'
            << "state post_collision_moments\n"
            << "step " << completed_step << '\n'
            << "data\n";
@@ -112,7 +117,8 @@ void writeCheckpoint(
 size_t loadCheckpoint(
     const std::vector<std::unique_ptr<DeviceDomain>> &domains,
     const std::vector<LBMState *> &states,
-    const std::string &path)
+    const std::string &path,
+    std::filesystem::path &output_directory)
 {
     require(domains.size() == states.size(), "inconsistent destination domains");
     require(states.size() == static_cast<size_t>(NUM_GPUS), "incorrect number of destination subdomains");
@@ -123,7 +129,7 @@ size_t loadCheckpoint(
     std::string magic;
     int version = 0;
     parseLine(readLine(input), "GLBM_CHECKPOINT", version);
-    require(version == CHECKPOINT_VERSION, "unsupported format version");
+    require(version >= MIN_SUPPORTED_CHECKPOINT_VERSION && version <= CHECKPOINT_VERSION, "unsupported format version");
 
     std::string precision;
     parseLine(readLine(input), "precision", precision);
@@ -154,6 +160,21 @@ size_t loadCheckpoint(
     dfloat u_max = 0;
     parseLine(readLine(input), "u_max", u_max);
     require(u_max == U_MAX, "maximum velocity does not match this build");
+
+    output_directory.clear();
+    if (version >= 2)
+    {
+        const std::string line = readLine(input);
+        std::istringstream parser(line);
+        std::string key;
+        std::string stored_output_directory;
+        parser >> key >> std::quoted(stored_output_directory);
+        require(key == "output_directory", "expected header field 'output_directory'");
+        require(!stored_output_directory.empty(), "empty output directory");
+        parser >> std::ws;
+        require(parser.eof(), "extra value in 'output_directory'");
+        output_directory = stored_output_directory;
+    }
 
     std::string state_representation;
     parseLine(readLine(input), "state", state_representation);

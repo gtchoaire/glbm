@@ -18,7 +18,10 @@ usage() {
         "  GLBM_GPU_INDEX             Physical GPU index (default: 0)" \
         "  GLBM_AUTOTUNE_STEPS        Steps per measurement (default: 3000)" \
         "  GLBM_AUTOTUNE_REPETITIONS  Measurements per candidate (default: 2)" \
-        "  GLBM_AUTOTUNE_CANDIDATES   Space-separated BXxBYxBZ list"
+        "  GLBM_AUTOTUNE_CANDIDATES   Space-separated BXxBYxBZ list" \
+        "  GLBM_AUTOTUNE_BLOCK_X      X sizes used by the default search" \
+        "  GLBM_AUTOTUNE_BLOCK_Y      Y sizes used by the default search" \
+        "  GLBM_AUTOTUNE_BLOCK_Z      Z sizes used by the default search"
 }
 
 for argument in "$@"; do
@@ -30,7 +33,7 @@ for argument in "$@"; do
     esac
 done
 
-for command_name in cmake nvidia-smi nvcc sha256sum awk sed; do
+for command_name in cmake nvidia-smi nvcc sha256sum awk sed tr; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         printf 'Required command not found: %s\n' "${command_name}" >&2
         exit 1
@@ -39,6 +42,11 @@ done
 
 if [[ ! -f "${case_file}" ]]; then
     printf 'Case file not found: %s\n' "${case_file}" >&2
+    exit 1
+fi
+
+if [[ ! "${tuning_steps}" =~ ^[1-9][0-9]*$ || ! "${repetitions}" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'Autotune steps and repetitions must be positive integers.\n' >&2
     exit 1
 fi
 
@@ -66,7 +74,9 @@ nx="$(read_case_value n_size)"
 sar="$(read_case_value aspect_ratio)"
 num_gpus="$(read_case_value num_gpus)"
 precision="$(read_case_value precision)"
+reynolds="$(read_case_value reynolds_number)"
 nz=$((nx * sar / num_gpus))
+global_nz=$((nx * sar))
 
 visible_devices=""
 for ((device_offset=0; device_offset<num_gpus; ++device_offset)); do
@@ -87,27 +97,57 @@ gpu_record="$(nvidia-smi -i "${visible_devices}" --query-gpu=uuid,name,compute_c
 cuda_record="$(nvcc --version | sed -n 's/.*release \([^,]*\).*/\1/p')"
 source_record="$({
     sha256sum "${project_dir}/CMakeLists.txt"
+    sha256sum "${project_dir}/autotune.sh"
     find "${project_dir}/include" "${project_dir}/src" -type f \( -name '*.h' -o -name '*.cuh' -o -name '*.cu' -o -name '*.cpp' \) -print0 |
         sort -z | xargs -0 sha256sum
 } | sha256sum | awk '{print $1}')"
 case_record="$(sha256sum "${case_file}" | awk '{print $1}')"
-cache_key="$(printf '%s\n%s\n%s\n%s\n' "${gpu_record}" "${cuda_record}" "${source_record}" "${case_record}" | sha256sum | awk '{print substr($1,1,16)}')"
+tuning_record="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+    "${tuning_steps}" "${repetitions}" "${GLBM_AUTOTUNE_CANDIDATES:-}" \
+    "${GLBM_AUTOTUNE_BLOCK_X:-8 16 32 64}" "${GLBM_AUTOTUNE_BLOCK_Y:-1 2 4 8}" "${GLBM_AUTOTUNE_BLOCK_Z:-1 2 4}" \
+    | sha256sum | awk '{print $1}')"
+cache_key="$(printf '%s\n%s\n%s\n%s\n%s\n' "${gpu_record}" "${cuda_record}" "${source_record}" "${case_record}" "${tuning_record}" | sha256sum | awk '{print substr($1,1,16)}')"
 cache_dir="${project_dir}/.autotune/${cache_key}"
 result_file="${cache_dir}/result.env"
+results_file="${cache_dir}/results.csv"
 build_root="${project_dir}/build-autotune/${cache_key}"
 mkdir -p "${cache_dir}" "${build_root}"
 
 printf 'GPU: %s\n' "${gpu_record}"
 printf 'Case: %s (global domain %sx%sx%s, local Z=%s, %s)\n' \
-    "${case_file}" "${nx}" "${nx}" "$((nx * sar))" "${nz}" "${precision}"
+    "${case_file}" "${nx}" "${nx}" "${global_nz}" "${nz}" "${precision}"
+printf 'Reynolds: %s\n' "${reynolds}"
 
-if [[ -f "${result_file}" && ${force_retune} -eq 0 ]]; then
-    # The file is generated locally below and contains integer assignments only.
+if [[ -f "${result_file}" && -f "${results_file}" && ${force_retune} -eq 0 ]]; then
+    # This file is generated locally from validated case/configuration scalars.
     source "${result_file}"
     printf 'Cached block: %sx%sx%s (%s MLUPS)\n' "${BEST_BLOCK_X}" "${BEST_BLOCK_Y}" "${BEST_BLOCK_Z}" "${BEST_MLUPS}"
+    printf 'All results: %s\n' "${results_file}"
 else
-    candidates_string="${GLBM_AUTOTUNE_CANDIDATES:-16x4x1 16x4x2 16x2x4 16x8x1 32x1x2 32x1x4 32x2x2 32x4x1 32x2x4 32x4x2 32x8x1 64x1x2 64x2x1 64x2x2 32x4x4 32x8x2}"
-    read -r -a candidates <<< "${candidates_string}"
+    candidates=()
+    if [[ -n "${GLBM_AUTOTUNE_CANDIDATES:-}" ]]; then
+        read -r -a candidates <<< "${GLBM_AUTOTUNE_CANDIDATES}"
+    else
+        read -r -a block_x_values <<< "${GLBM_AUTOTUNE_BLOCK_X:-8 16 32 64}"
+        read -r -a block_y_values <<< "${GLBM_AUTOTUNE_BLOCK_Y:-1 2 4 8}"
+        read -r -a block_z_values <<< "${GLBM_AUTOTUNE_BLOCK_Z:-1 2 4}"
+        for bx in "${block_x_values[@]}"; do
+            for by in "${block_y_values[@]}"; do
+                for bz in "${block_z_values[@]}"; do
+                    candidates+=("${bx}x${by}x${bz}")
+                done
+            done
+        done
+    fi
+
+    printf '%s\n' \
+        "candidate,block_x,block_y,block_z,threads,shared_bytes,global_nx,global_ny,global_nz,local_nz,reynolds,num_gpus,precision,steps,repetitions,run_mlups,average_mlups,status" \
+        > "${results_file}"
+
+    append_result() {
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$@" >> "${results_file}"
+    }
+
     best_mlups=0
     best_block=""
 
@@ -115,6 +155,8 @@ else
     for candidate in "${candidates[@]}"; do
         if [[ ! "${candidate}" =~ ^([0-9]+)x([0-9]+)x([0-9]+)$ ]]; then
             printf 'Skipping malformed candidate: %s\n' "${candidate}" >&2
+            append_result "${candidate}" "" "" "" "" "" "${nx}" "${nx}" "${global_nz}" "${nz}" \
+                "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "" "" "malformed"
             continue
         fi
         bx="${BASH_REMATCH[1]}"
@@ -126,11 +168,13 @@ else
         # 48 KiB is the portable static shared-memory limit for these kernels.
         if ((threads > 1024 || nx % bx != 0 || nx % by != 0 || nz % bz != 0 || shared_bytes > 49152)); then
             printf 'Skipping %s (threads=%s, shared=%s bytes, or incompatible domain)\n' "${candidate}" "${threads}" "${shared_bytes}"
+            append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
+                "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "" "" "incompatible"
             continue
         fi
 
         candidate_build="${build_root}/bench-${candidate}"
-        cmake -S "${project_dir}" -B "${candidate_build}" -DCMAKE_BUILD_TYPE=Release \
+        if ! cmake -S "${project_dir}" -B "${candidate_build}" -DCMAKE_BUILD_TYPE=Release \
             -DLBM_CONFIG_FILE="${case_file}" \
             -DLBM_BLOCK_X_OVERRIDE="${bx}" \
             -DLBM_BLOCK_Y_OVERRIDE="${by}" \
@@ -138,18 +182,32 @@ else
             -DLBM_SIMULATION_STEPS_OVERRIDE="${tuning_steps}" \
             -DLBM_PRINT_INTERVAL_OVERRIDE="${tuning_steps}" \
             -DLBM_CHECKPOINT_INTERVAL_OVERRIDE=0 \
-            -DLBM_SAVE_VTI_OVERRIDE=false >/dev/null
-        cmake --build "${candidate_build}" --parallel >/dev/null
+            -DLBM_SAVE_VTI_OVERRIDE=false \
+            -DLBM_SAVE_BINARY_OVERRIDE=false \
+            -DLBM_SAVE_KINETIC_ENERGY_OVERRIDE=false \
+            -DLBM_RESTART_PATH_OVERRIDE= >/dev/null; then
+            append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
+                "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "" "" "configure_failed"
+            continue
+        fi
+        if ! cmake --build "${candidate_build}" --parallel >/dev/null; then
+            append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
+                "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "" "" "build_failed"
+            continue
+        fi
 
         total_mlups=0
         valid_runs=0
+        run_values=""
+        run_status="ok"
         for ((run=1; run<=repetitions; ++run)); do
             if ! output="$(CUDA_VISIBLE_DEVICES="${visible_devices}" "${candidate_build}/glbm" 2>&1)"; then
                 printf 'Candidate %s failed during run %s.\n%s\n' \
                     "${candidate}" "${run}" "${output}" >&2
-                exit 1
+                run_status="run_failed"
+                break
             fi
-            mlups="$(awk '
+            mlups="$(tr '\r' '\n' <<< "${output}" | awk '
                 /^Step / {
                     for (i=1; i<=NF; ++i)
                         if ($i == "MLUPS") value=$(i+1)
@@ -159,17 +217,31 @@ else
                         if ($i == "solver") value=$(i+1)
                 }
                 END {if (value != "") print value}
-            ' <<< "${output}")"
+            ')"
             if [[ ! "${mlups}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
                 printf 'Candidate %s did not report MLUPS.\n%s\n' "${candidate}" "${output}" >&2
-                exit 1
+                run_status="invalid_output"
+                break
             fi
             printf '  %s run %s: %s MLUPS\n' "${candidate}" "${run}" "${mlups}"
+            if [[ -n "${run_values}" ]]; then
+                run_values+=";"
+            fi
+            run_values+="${mlups}"
             total_mlups="$(awk -v a="${total_mlups}" -v b="${mlups}" 'BEGIN {printf "%.9f", a+b}')"
             valid_runs=$((valid_runs + 1))
         done
+
+        if [[ "${run_status}" != "ok" ]]; then
+            append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
+                "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "${run_values}" "" "${run_status}"
+            continue
+        fi
+
         average_mlups="$(awk -v total="${total_mlups}" -v count="${valid_runs}" 'BEGIN {printf "%.3f", total/count}')"
         printf '  %s average: %s MLUPS\n' "${candidate}" "${average_mlups}"
+        append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
+            "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "${run_values}" "${average_mlups}" "ok"
         if awk -v candidate_value="${average_mlups}" -v best_value="${best_mlups}" 'BEGIN {exit !(candidate_value > best_value)}'; then
             best_mlups="${average_mlups}"
             best_block="${candidate}"
@@ -182,9 +254,11 @@ else
     fi
     IFS=x read -r BEST_BLOCK_X BEST_BLOCK_Y BEST_BLOCK_Z <<< "${best_block}"
     BEST_MLUPS="${best_mlups}"
-    printf 'BEST_BLOCK_X=%s\nBEST_BLOCK_Y=%s\nBEST_BLOCK_Z=%s\nBEST_MLUPS=%s\n' \
-        "${BEST_BLOCK_X}" "${BEST_BLOCK_Y}" "${BEST_BLOCK_Z}" "${BEST_MLUPS}" > "${result_file}"
+    printf 'BEST_BLOCK_X=%s\nBEST_BLOCK_Y=%s\nBEST_BLOCK_Z=%s\nBEST_MLUPS=%s\nMESH_NX=%s\nMESH_NY=%s\nMESH_NZ=%s\nLOCAL_NZ=%s\nREYNOLDS=%s\nNUM_GPUS=%s\nPRECISION=%s\nAUTOTUNE_STEPS=%s\nAUTOTUNE_REPETITIONS=%s\n' \
+        "${BEST_BLOCK_X}" "${BEST_BLOCK_Y}" "${BEST_BLOCK_Z}" "${BEST_MLUPS}" \
+        "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" > "${result_file}"
     printf 'Selected block: %sx%sx%s (%s MLUPS)\n' "${BEST_BLOCK_X}" "${BEST_BLOCK_Y}" "${BEST_BLOCK_Z}" "${BEST_MLUPS}"
+    printf 'All results: %s\n' "${results_file}"
 fi
 
 production_build="${build_root}/selected"

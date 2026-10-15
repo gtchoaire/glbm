@@ -1,6 +1,5 @@
 #include "../include/multiGpu.cuh"
 
-#include <cstdio>
 #include <cuda_runtime.h>
 
 #include "../include/model.h"
@@ -13,6 +12,8 @@ namespace
 {
 constexpr size_t HALO_PLANE_VALUES = static_cast<size_t>(QF) * NX * NY;
 constexpr size_t HALO_PLANE_BYTES = HALO_PLANE_VALUES * sizeof(dfloat);
+constexpr unsigned int HALO_BLOCK_X = 32;
+constexpr unsigned int HALO_BLOCK_Y = 8;
 }
 
 SubDomainInfo makeSubDomainInfo(const int subdomain_id)
@@ -34,64 +35,11 @@ bool validateMultiGpuTopology()
     int available_devices = 0;
     const cudaError_t count_status = cudaGetDeviceCount(&available_devices);
     if (count_status != cudaSuccess)
-    {
-        std::fprintf(stderr, "Failed to query CUDA devices: %s\n",
-            cudaGetErrorString(count_status));
         return false;
-    }
 
-    const int last_device = GPU_INDEX + NUM_GPUS - 1;
+    constexpr int last_device = GPU_INDEX + NUM_GPUS - 1;
     if (GPU_INDEX < 0 || last_device >= available_devices)
-    {
-        std::fprintf(stderr,
-            "Requested %d GPU(s), starting at device %d, but only %d CUDA "
-            "device(s) are available.\n",
-            NUM_GPUS, GPU_INDEX, available_devices);
         return false;
-    }
-
-    std::printf("CUDA decomposition: %d slab(s) along Z, %d plane(s) per GPU\n",
-        NUM_GPUS, LOCAL_NZ);
-    for (int subdomain_id = 0; subdomain_id < NUM_GPUS; ++subdomain_id)
-    {
-        const SubDomainInfo info = makeSubDomainInfo(subdomain_id);
-        cudaDeviceProp properties{};
-        const cudaError_t property_status =
-            cudaGetDeviceProperties(&properties, info.gpu_id);
-        if (property_status != cudaSuccess)
-        {
-            std::fprintf(stderr, "Failed to query CUDA device %d: %s\n",
-                info.gpu_id, cudaGetErrorString(property_status));
-            return false;
-        }
-
-        std::printf("  subdomain %d -> GPU %d (%s), global Z [%d, %d]%s%s\n",
-            subdomain_id, info.gpu_id, properties.name,
-            info.global_z_start, info.global_z_end,
-            info.has_back_wall ? ", BACK wall" : "",
-            info.has_front_wall ? ", FRONT wall" : "");
-    }
-
-    for (int subdomain_id = 0; subdomain_id + 1 < NUM_GPUS; ++subdomain_id)
-    {
-        const int back_device = GPU_INDEX + subdomain_id;
-        const int front_device = back_device + 1;
-        int back_to_front = 0;
-        int front_to_back = 0;
-        if (cudaDeviceCanAccessPeer(&back_to_front, back_device, front_device) != cudaSuccess ||
-            cudaDeviceCanAccessPeer(&front_to_back, front_device, back_device) != cudaSuccess)
-        {
-            std::fprintf(stderr,
-                "Failed to query peer access between CUDA devices %d and %d.\n",
-                back_device, front_device);
-            return false;
-        }
-        std::printf("  P2P GPU %d <-> GPU %d: %s\n",
-            back_device, front_device,
-            back_to_front && front_to_back ?
-                "direct access available" :
-                "direct access unavailable; pinned host staging will be used");
-    }
 
     return true;
 }
@@ -122,7 +70,7 @@ void beginMomentHaloExchange(
     DeviceDomain &back, DeviceDomain &front,
     const LBMState &back_state, const LBMState &front_state)
 {
-    const dim3 block(32, 8);
+    const dim3 block(HALO_BLOCK_X, HALO_BLOCK_Y);
     const dim3 grid((NX + block.x - 1) / block.x, (NY + block.y - 1) / block.y);
 
     // Each pinned buffer is produced by one device and consumed by the other.

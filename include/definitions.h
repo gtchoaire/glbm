@@ -3,23 +3,14 @@
 
 #include "model.h"
 #include "index.h"
-#include <iostream>
+#include <stdexcept>
+#include <string>
 
 /* --------------------------- CONSTANTS --------------------------- */
 
 constexpr dfloat OMEGA = 1.0 / TAU;            // (tau)^-1
 constexpr dfloat OMEGAd2 = OMEGA / 2.0;        // OMEGA/2
-constexpr dfloat OMEGAd9 = OMEGA / 9.0;        // OMEGA/9
 constexpr dfloat T_OMEGA = 1.0 - OMEGA;        // 1-OMEGA
-constexpr dfloat TT_OMEGA = 1.0 - 0.5 * OMEGA; // 1.0 - OMEGA/2
-constexpr dfloat OMEGA_P1 = 1.0 + OMEGA;       // 1+ OMEGA
-constexpr dfloat TT_OMEGA_T3 = TT_OMEGA * 3.0; // 3*(1-0.5*OMEGA)
-
-#define SQRT_2 (1.41421356237309504880168872420969807856967187537)
-#define SQRT_10 (3.162277660168379331998893544432718533719555139325)
-
-constexpr dfloat ONESIXTH = 1.0 / 6.0;
-constexpr dfloat ONETHIRD = 1.0 / 3.0;
 
 #ifndef BLOCK_NX_VALUE
 #define BLOCK_NX_VALUE 32
@@ -33,30 +24,31 @@ constexpr dfloat ONETHIRD = 1.0 / 3.0;
 
 // CUDA execution geometry. It can be tuned without changing the logical AB
 // tile below, which is part of the validated numerical method.
-constexpr const int BLOCK_NX = BLOCK_NX_VALUE;
-constexpr const int BLOCK_NY = BLOCK_NY_VALUE;
-constexpr const int BLOCK_NZ = BLOCK_NZ_VALUE;
+constexpr int BLOCK_NX = BLOCK_NX_VALUE;
+constexpr int BLOCK_NY = BLOCK_NY_VALUE;
+constexpr int BLOCK_NZ = BLOCK_NZ_VALUE;
+static_assert(BLOCK_NX > 0 && BLOCK_NY > 0 && BLOCK_NZ > 0, "CUDA block dimensions must be positive");
+static_assert(BLOCK_NX * BLOCK_NY * BLOCK_NZ <= 1024, "CUDA block cannot exceed 1024 threads");
+static_assert(NX % BLOCK_NX == 0 && NY % BLOCK_NY == 0 && NZ % BLOCK_NZ == 0,
+              "Domain dimensions must be divisible by CUDA block dimensions");
 
 // Logical tile used by the validated AB first-step reconstruction.  Keep it
 // independent from the CUDA block geometry so launch tuning does not alter
 // which neighbouring states are collided during that first step.
-constexpr const int AB_TILE_NX = 8;
-constexpr const int AB_TILE_NY = 8;
-constexpr const int AB_TILE_NZ = 4;
+constexpr int AB_TILE_NX = 8;
+constexpr int AB_TILE_NY = 8;
+constexpr int AB_TILE_NZ = 4;
 
-#define BLOCK_LBM_SIZE (BLOCK_NX * BLOCK_NY * BLOCK_NZ)
+constexpr size_t BLOCK_LBM_SIZE = BLOCK_NX * BLOCK_NY * BLOCK_NZ;
 
-constexpr const size_t NUM_BLOCK_X = NX / BLOCK_NX;
-constexpr const size_t NUM_BLOCK_Y = NY / BLOCK_NY;
-constexpr const size_t NUM_BLOCK_Z = NZ / BLOCK_NZ;
+constexpr size_t NUM_BLOCK_X = NX / BLOCK_NX;
+constexpr size_t NUM_BLOCK_Y = NY / BLOCK_NY;
+constexpr size_t NUM_BLOCK_Z = NZ / BLOCK_NZ;
 
-constexpr const size_t NUM_BLOCK = NUM_BLOCK_X * NUM_BLOCK_Y * NUM_BLOCK_Z;
+constexpr size_t NUM_BLOCK = NUM_BLOCK_X * NUM_BLOCK_Y * NUM_BLOCK_Z;
 
-constexpr const size_t NUMBER_LBM_NODES = NUM_BLOCK * BLOCK_LBM_SIZE;
-constexpr const size_t MEM_SIZE_BLOCK_LBM = sizeof(dfloat) * BLOCK_LBM_SIZE * NUMBER_MOMENTS;
-// memory size
-constexpr const size_t MEM_SIZE_SCALAR = sizeof(dfloat) * NUMBER_LBM_NODES;
-constexpr const size_t MEM_SIZE_MOM = sizeof(dfloat) * NUMBER_LBM_NODES * NUMBER_MOMENTS;
+constexpr size_t NUMBER_LBM_NODES = NUM_BLOCK * BLOCK_LBM_SIZE;
+constexpr size_t MEM_SIZE_MOM = sizeof(dfloat) * NUMBER_LBM_NODES * NUMBER_MOMENTS;
 
 #ifndef SAVE_VTI_OUTPUT_VALUE
 #define SAVE_VTI_OUTPUT_VALUE 1
@@ -80,21 +72,20 @@ constexpr size_t BINARY_OUTPUT_INTERVAL_VALUE = BINARY_OUTPUT_INTERVAL;
 #define SAVE_KINETIC_ENERGY_OUTPUT_VALUE 0
 #endif
 
-constexpr bool SAVE_KINETIC_ENERGY_OUTPUT =
-    SAVE_KINETIC_ENERGY_OUTPUT_VALUE != 0;
+constexpr bool SAVE_KINETIC_ENERGY_OUTPUT = SAVE_KINETIC_ENERGY_OUTPUT_VALUE != 0;
 
 #ifndef KINETIC_ENERGY_OUTPUT_INTERVAL
 #define KINETIC_ENERGY_OUTPUT_INTERVAL 1000
 #endif
 
-constexpr size_t KINETIC_ENERGY_INTERVAL =
-    KINETIC_ENERGY_OUTPUT_INTERVAL;
+constexpr size_t KINETIC_ENERGY_INTERVAL = KINETIC_ENERGY_OUTPUT_INTERVAL;
 
 #ifndef PRINT_INTERVAL_VALUE
 #define PRINT_INTERVAL_VALUE 10000
 #endif
 
 constexpr int PRINT_INTERVAL = PRINT_INTERVAL_VALUE;
+static_assert(PRINT_INTERVAL > 0, "PRINT_INTERVAL must be positive");
 
 #ifndef CHECKPOINT_INTERVAL_VALUE
 #define CHECKPOINT_INTERVAL_VALUE 0
@@ -109,15 +100,13 @@ constexpr int PRINT_INTERVAL = PRINT_INTERVAL_VALUE;
 constexpr size_t CHECKPOINT_INTERVAL = CHECKPOINT_INTERVAL_VALUE;
 constexpr const char *CHECKPOINT_PATH = CHECKPOINT_PATH_VALUE;
 constexpr const char *RESTART_PATH = RESTART_PATH_VALUE;
+constexpr bool CHECKPOINT_ENABLED = CHECKPOINT_INTERVAL > 0;
+constexpr bool RESTART_ENABLED = RESTART_PATH_VALUE[0] != '\0';
 
-#define checkCuda(cmd)                                                \
-do {                                                               \
-    const auto status = (cmd);                                     \
-    if (status != cudaSuccess) {                                   \
-        std::printf("cuda error %s:%d: %s\n", __FILE__, __LINE__,  \
-        cudaGetErrorString(status));                               \
-        exit(EXIT_FAILURE);                                        \
-    }                                                              \
+#define checkCuda(cmd) do { \
+    const cudaError_t status = (cmd); \
+    if (status != cudaSuccess) \
+        throw std::runtime_error(std::string("CUDA: ") + cudaGetErrorString(status)); \
 } while (0)
 
 #endif

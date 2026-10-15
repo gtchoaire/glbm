@@ -14,7 +14,7 @@ struct SubDomainInfo
     bool has_front_wall;
 
     __host__ __device__
-    SubDomainInfo(
+    constexpr SubDomainInfo(
         int gpu,
         int z_start,
         int z_end,
@@ -39,7 +39,7 @@ struct LBMState
     dfloat *h_moments = nullptr;
     dfloat *d_moments = nullptr;
 
-    __host__ __device__ static size_t storageIndex(const int moment, const size_t scalar_index)
+    __host__ __device__ static constexpr size_t storageIndex(const int moment, const size_t scalar_index)
     {
         const size_t block = scalar_index / BLOCK_LBM_SIZE;
         const size_t node = scalar_index - block * BLOCK_LBM_SIZE;

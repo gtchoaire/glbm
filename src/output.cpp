@@ -5,22 +5,26 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <iostream>
 #include <limits>
 #include <sstream>
+#include <string>
 #include <ctime>
 
 #include PROPERTIES
+
+namespace
+{
+constexpr std::array<const char *, 4> FIELD_NAMES{"rho", "ux", "uy", "uz"};
+constexpr const char *PRECISION_NAME = sizeof(dfloat) == sizeof(float) ? "float" : "double";
+constexpr const char *VTK_SCALAR_TYPE = sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64";
+}
 
 bool createOutputDirectory(std::filesystem::path &output_directory)
 {
     const auto now = std::time(nullptr);
     std::tm local_time{};
     if (localtime_r(&now, &local_time) == nullptr)
-    {
-        std::cerr << "Failed to determine local time for output directory.\n";
         return false;
-    }
 
     std::ostringstream directory_name;
     directory_name << std::put_time(&local_time, "%Y%m%d_%H%M");
@@ -28,19 +32,14 @@ bool createOutputDirectory(std::filesystem::path &output_directory)
 
     std::error_code error;
     std::filesystem::create_directories(output_directory, error);
-    if (error)
-    {
-        std::cerr << "Failed to create output directory " << output_directory
-                  << ": " << error.message() << '\n';
-        return false;
-    }
-    return true;
+    return !error;
 }
 
 bool writeSimulationInfo(const std::filesystem::path &output_directory)
 {
     const std::filesystem::path path = output_directory / "info.txt";
     std::ofstream file(path);
+    if (!file) return false;
 
     file << std::setprecision(std::numeric_limits<dfloat>::max_digits10)
          << "Re = " << RE << '\n'
@@ -50,37 +49,29 @@ bool writeSimulationInfo(const std::filesystem::path &output_directory)
          << "SAR = " << SAR << '\n'
          << "Umax = " << U_MAX << '\n'
          << "Stencil = " << STR(STENCIL) << '\n'
-         << "Precision = " << (sizeof(dfloat) == sizeof(float) ? "float" : "double") << '\n'
+         << "Precision = " << PRECISION_NAME << '\n'
          << "Nsteps = " << N_STEPS << '\n'
          << "Kinetic energy output = " << (SAVE_KINETIC_ENERGY_OUTPUT ? "true" : "false") << '\n'
          << "Kinetic energy interval = " << KINETIC_ENERGY_INTERVAL << '\n'
+         << "Checkpoint file = " << (output_directory / std::filesystem::path(CHECKPOINT_PATH)) << '\n'
          << "block x = " << BLOCK_NX << '\n'
          << "block y = " << BLOCK_NY << '\n'
          << "block z = " << BLOCK_NZ << '\n';
 
-    return true;
+    return static_cast<bool>(file);
 }
 
 bool writeVti(const std::vector<LBMState *> &states, const int step,
               const std::filesystem::path &output_directory)
 {
-    if (states.size() != static_cast<size_t>(NUM_GPUS))
-    {
-        std::cerr << "Expected " << NUM_GPUS << " VTI subdomain(s), got "
-                  << states.size() << ".\n";
-        return false;
-    }
+    if (states.size() != static_cast<size_t>(NUM_GPUS)) return false;
 
     std::ostringstream filename;
     filename << "state_" << std::setw(8) << std::setfill('0')
              << step << ".vti";
     const std::filesystem::path path = output_directory / filename.str();
     std::ofstream file(path);
-    if (!file)
-    {
-        std::cerr << "Failed to open " << path << " for writing.\n";
-        return false;
-    }
+    if (!file) return false;
 
     file << std::setprecision(std::numeric_limits<dfloat>::max_digits10);
     file << "<?xml version=\"1.0\"?>\n"
@@ -93,7 +84,7 @@ bool writeVti(const std::vector<LBMState *> &states, const int step,
          << " 0 " << GLOBAL_NY - 1 << " 0 " << GLOBAL_NZ - 1 << "\">\n"
          << "      <PointData Scalars=\"density\" Vectors=\"velocity\">\n"
          << "        <DataArray type=\""
-         << (sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64")
+         << VTK_SCALAR_TYPE
          << "\" Name=\"density\" format=\"ascii\">\n";
 
     for (const LBMState *state : states)
@@ -109,7 +100,7 @@ bool writeVti(const std::vector<LBMState *> &states, const int step,
 
     file << "\n        </DataArray>\n"
          << "        <DataArray type=\""
-         << (sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64")
+         << VTK_SCALAR_TYPE
          << "\" Name=\"velocity\" NumberOfComponents=\"3\" "
             "format=\"ascii\">\n";
 
@@ -133,14 +124,7 @@ bool writeVti(const std::vector<LBMState *> &states, const int step,
          << "  </ImageData>\n"
          << "</VTKFile>\n";
 
-    if (!file)
-    {
-        std::cerr << "Failed while writing " << path << ".\n";
-        return false;
-    }
-
-    std::cout << "Wrote " << path << '\n';
-    return true;
+    return static_cast<bool>(file);
 }
 
 bool writeBinaryFields(const std::vector<LBMState *> &states, const int step,
@@ -149,13 +133,12 @@ bool writeBinaryFields(const std::vector<LBMState *> &states, const int step,
     std::ostringstream suffix;
     suffix << std::setw(8) << std::setfill('0') << step;
 
-    const std::array<std::string, 4> field_names{"rho", "ux", "uy", "uz"};
     std::array<std::ofstream, 4> files;
-    for (size_t field = 0; field < field_names.size(); ++field)
+    for (size_t field = 0; field < FIELD_NAMES.size(); ++field)
     {
-        const std::filesystem::path path =
-            output_directory / (field_names[field] + "_" + suffix.str() + ".bin");
+        const std::filesystem::path path = output_directory / (std::string(FIELD_NAMES[field]) + "_" + suffix.str() + ".bin");
         files[field].open(path, std::ios::binary);
+        if (!files[field]) return false;
     }
 
     // Consecutive dfloat values in global z-y-x order, without a header.
@@ -174,13 +157,11 @@ bool writeBinaryFields(const std::vector<LBMState *> &states, const int step,
                         state->host(M_UY_INDEX, index) / F_M_I_SCALE,
                         state->host(M_UZ_INDEX, index) / F_M_I_SCALE};
 
-                    for (size_t field = 0; field < field_names.size(); ++field)
-                        files[field].write(
-                            reinterpret_cast<const char *>(&values[field]),
-                            sizeof(values[field]));
+                    for (size_t field = 0; field < FIELD_NAMES.size(); ++field)
+                        files[field].write(reinterpret_cast<const char *>(&values[field]), sizeof(values[field]));
                 }
 
-    std::cout << "Wrote binary fields for step " << step << " to "
-              << output_directory << '\n';
+    for (const std::ofstream &file : files)
+        if (!file) return false;
     return true;
 }

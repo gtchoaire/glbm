@@ -12,18 +12,14 @@ __device__ static void inline moment_collision(dfloat rho,
                                                dfloat ux, dfloat uy, dfloat uz,
                                                dfloat *mxx, dfloat *mxy, dfloat *mxz, dfloat *myy, dfloat *myz, dfloat *mzz)
 {
-    const dfloat omegaVar = OMEGA;
-    const dfloat t_omegaVar = static_cast<dfloat>(1.0) - omegaVar;
-    const dfloat omegaVar_d2 = omegaVar / static_cast<dfloat>(2.0);
-
     // equation 90
-    *mxx = (t_omegaVar * (*mxx) + omegaVar_d2 * ux * ux);
-    *myy = (t_omegaVar * (*myy) + omegaVar_d2 * uy * uy);
-    *mzz = (t_omegaVar * (*mzz) + omegaVar_d2 * uz * uz);
+    *mxx = T_OMEGA * (*mxx) + OMEGAd2 * ux * ux;
+    *myy = T_OMEGA * (*myy) + OMEGAd2 * uy * uy;
+    *mzz = T_OMEGA * (*mzz) + OMEGAd2 * uz * uz;
 
-    *mxy = (t_omegaVar * (*mxy) + omegaVar * ux * uy);
-    *mxz = (t_omegaVar * (*mxz) + omegaVar * ux * uz);
-    *myz = (t_omegaVar * (*myz) + omegaVar * uy * uz);
+    *mxy = T_OMEGA * (*mxy) + OMEGA * ux * uy;
+    *mxz = T_OMEGA * (*mxz) + OMEGA * ux * uz;
+    *myz = T_OMEGA * (*myz) + OMEGA * uy * uz;
 }
 
 #endif // !RECONSTRUCTION_CUH

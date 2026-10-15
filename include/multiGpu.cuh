@@ -3,8 +3,7 @@
 
 #include "globalStructs.cuh"
 
-// Validates the devices selected by GPU_INDEX and NUM_GPUS and reports the
-// peer-to-peer links that will be used by the Z-halo exchange.
+// Validates the devices selected by GPU_INDEX and NUM_GPUS.
 bool validateMultiGpuTopology();
 
 // The cubic cavity is decomposed into contiguous slabs along Z.  X and Y

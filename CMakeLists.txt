@@ -1,33 +1,32 @@
 cmake_minimum_required(VERSION 3.24)
 
-# Detect every installed GPU and emit native machine code only.  The "-real"
-# suffix avoids PTX JIT compatibility problems with older driver branches.
-find_program(NVIDIA_SMI nvidia-smi REQUIRED)
-execute_process(
-    COMMAND "${NVIDIA_SMI}" --query-gpu=compute_cap --format=csv,noheader,nounits
-    RESULT_VARIABLE NVIDIA_SMI_STATUS
-    OUTPUT_VARIABLE GPU_COMPUTE_CAPABILITIES
-    ERROR_VARIABLE NVIDIA_SMI_ERROR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+# Detect the native architectures only when creating a build directory. The
+# cached value avoids invoking nvidia-smi on every case.toml reconfiguration.
+if(NOT CMAKE_CUDA_ARCHITECTURES)
+    find_program(NVIDIA_SMI nvidia-smi REQUIRED)
+    execute_process(
+        COMMAND "${NVIDIA_SMI}" --query-gpu=compute_cap --format=csv,noheader,nounits
+        RESULT_VARIABLE NVIDIA_SMI_STATUS
+        OUTPUT_VARIABLE GPU_COMPUTE_CAPABILITIES
+        ERROR_VARIABLE NVIDIA_SMI_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
 
-if(NOT NVIDIA_SMI_STATUS EQUAL 0 OR GPU_COMPUTE_CAPABILITIES STREQUAL "")
-    message(FATAL_ERROR "Could not detect the GPU architecture: ${NVIDIA_SMI_ERROR}")
+    if(NOT NVIDIA_SMI_STATUS EQUAL 0 OR GPU_COMPUTE_CAPABILITIES STREQUAL "")
+        message(FATAL_ERROR "Could not detect the GPU architecture: ${NVIDIA_SMI_ERROR}")
+    endif()
+
+    string(REPLACE "\n" ";" GPU_COMPUTE_CAPABILITIES "${GPU_COMPUTE_CAPABILITIES}")
+    set(DETECTED_CUDA_ARCHITECTURES)
+    foreach(capability IN LISTS GPU_COMPUTE_CAPABILITIES)
+        string(STRIP "${capability}" capability)
+        string(REPLACE "." "" capability "${capability}")
+        list(APPEND DETECTED_CUDA_ARCHITECTURES "${capability}-real")
+    endforeach()
+    list(REMOVE_DUPLICATES DETECTED_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES "${DETECTED_CUDA_ARCHITECTURES}" CACHE STRING
+        "CUDA architectures detected from the installed GPU(s)")
 endif()
-
-string(REPLACE "\n" ";" GPU_COMPUTE_CAPABILITIES
-    "${GPU_COMPUTE_CAPABILITIES}")
-set(DETECTED_CUDA_ARCHITECTURES)
-foreach(capability IN LISTS GPU_COMPUTE_CAPABILITIES)
-    string(STRIP "${capability}" capability)
-    string(REPLACE "." "" capability "${capability}")
-    list(APPEND DETECTED_CUDA_ARCHITECTURES "${capability}-real")
-endforeach()
-list(REMOVE_DUPLICATES DETECTED_CUDA_ARCHITECTURES)
-
-# FORCE replaces stale architecture values in existing build directories.
-set(CMAKE_CUDA_ARCHITECTURES "${DETECTED_CUDA_ARCHITECTURES}" CACHE STRING
-    "CUDA architectures detected from the installed GPU(s)" FORCE)
 
 project(glbm LANGUAGES CXX CUDA)
 
@@ -89,7 +88,7 @@ read_config(restart_path RESTART_PATH)
 foreach(variable
         NUM_GPUS SIMULATION_STEPS PRINT_INTERVAL
         BLOCK_X BLOCK_Y BLOCK_Z SAVE_VTI SAVE_BINARY SAVE_KINETIC_ENERGY
-        KINETIC_ENERGY_INTERVAL CHECKPOINT_INTERVAL)
+        KINETIC_ENERGY_INTERVAL CHECKPOINT_INTERVAL RESTART_PATH)
     if(DEFINED LBM_${variable}_OVERRIDE)
         set(${variable} "${LBM_${variable}_OVERRIDE}")
     endif()
@@ -121,42 +120,60 @@ if(NOT KINETIC_ENERGY_INTERVAL MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR "kinetic_energy_interval must be a positive integer")
 endif()
 
-add_executable(glbm
+set(GLBM_CORE_SOURCES
     src/checkpoint.cpp
-    src/main.cu
     src/lbmState.cu
     src/mlbm.cu
     src/multiGpu.cu
     src/nodeType.cu
-    src/output.cpp
-    src/simulation.cu
 )
 
 # These files include CUDA headers and device-side declarations.
 set_source_files_properties(src/checkpoint.cpp src/output.cpp
     PROPERTIES LANGUAGE CUDA)
 
-target_include_directories(glbm PRIVATE include)
-
-target_compile_options(glbm PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:-O3>
-    $<$<COMPILE_LANGUAGE:CUDA>:--restrict>
-    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+add_library(glbm_core OBJECT ${GLBM_CORE_SOURCES})
+add_library(glbm_output OBJECT src/output.cpp)
+add_library(glbm_simulation OBJECT src/simulation.cu)
+add_executable(glbm
+    src/main.cu
+    $<TARGET_OBJECTS:glbm_core>
+    $<TARGET_OBJECTS:glbm_output>
+    $<TARGET_OBJECTS:glbm_simulation>
 )
 
-target_compile_definitions(glbm PRIVATE
-    NUM_GPUS=${NUM_GPUS}
-    N_SIZE=${N_SIZE}
-    SAR=${SAR}
-    RE_NUMBER=${RE_NUMBER}
-    U_MAX_VALUE=${U_MAX}
+set(GLBM_COMPILE_TARGETS glbm_core glbm_output glbm_simulation)
+foreach(target IN LISTS GLBM_COMPILE_TARGETS)
+    target_include_directories(${target} PRIVATE include)
+    target_compile_options(${target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-O3>
+        $<$<COMPILE_LANGUAGE:CUDA>:--restrict>
+        $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+    )
+    target_compile_definitions(${target} PRIVATE
+        NUM_GPUS=${NUM_GPUS}
+        N_SIZE=${N_SIZE}
+        SAR=${SAR}
+        RE_NUMBER=${RE_NUMBER}
+        U_MAX_VALUE=${U_MAX}
+        STENCIL=${STENCIL}
+        ORDER=${ORDER}
+        BLOCK_NX_VALUE=${BLOCK_X}
+        BLOCK_NY_VALUE=${BLOCK_Y}
+        BLOCK_NZ_VALUE=${BLOCK_Z}
+    )
+    if(PRECISION STREQUAL "double")
+        target_compile_definitions(${target} PRIVATE double_precision)
+    endif()
+    set_target_properties(${target} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+endforeach()
+
+# Operational settings do not affect the numerical kernels. Keeping them on
+# their actual consumers avoids rebuilding every CUDA translation unit when
+# only output cadence, step count, or restart settings change.
+target_compile_definitions(glbm_simulation PRIVATE
     SIMULATION_STEPS=${SIMULATION_STEPS}
     PRINT_INTERVAL_VALUE=${PRINT_INTERVAL}
-    STENCIL=${STENCIL}
-    ORDER=${ORDER}
-    BLOCK_NX_VALUE=${BLOCK_X}
-    BLOCK_NY_VALUE=${BLOCK_Y}
-    BLOCK_NZ_VALUE=${BLOCK_Z}
     SAVE_VTI_OUTPUT_VALUE=${SAVE_VTI}
     OUTPUT_INTERVAL=${OUTPUT_INTERVAL}
     SAVE_BINARY_OUTPUT_VALUE=${SAVE_BINARY}
@@ -168,8 +185,11 @@ target_compile_definitions(glbm PRIVATE
     RESTART_PATH_VALUE=\"${RESTART_PATH}\"
 )
 
-if(PRECISION STREQUAL "double")
-    target_compile_definitions(glbm PRIVATE double_precision)
-endif()
+target_compile_definitions(glbm_output PRIVATE
+    SIMULATION_STEPS=${SIMULATION_STEPS}
+    SAVE_KINETIC_ENERGY_OUTPUT_VALUE=${SAVE_KINETIC_ENERGY}
+    KINETIC_ENERGY_OUTPUT_INTERVAL=${KINETIC_ENERGY_INTERVAL}
+    CHECKPOINT_PATH_VALUE=\"${CHECKPOINT_PATH}\"
+)
 
 set_target_properties(glbm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
