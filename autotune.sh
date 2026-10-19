@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep decimal serialization and numeric tools independent from the user's
+# locale. CSV fields and cached values always use a decimal dot.
+export LC_ALL=C
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 case_file="${GLBM_CASE_FILE:-${project_dir}/case.toml}"
 gpu_index="${GLBM_GPU_INDEX:-0}"
@@ -8,6 +12,9 @@ tuning_steps="${GLBM_AUTOTUNE_STEPS:-3000}"
 repetitions="${GLBM_AUTOTUNE_REPETITIONS:-2}"
 run_after_tuning=1
 force_retune=0
+default_block_x_values="8 16 32 64 128 256"
+default_block_y_values="1 2 4 8"
+default_block_z_values="1 2 4"
 
 usage() {
     printf '%s\n' \
@@ -19,9 +26,9 @@ usage() {
         "  GLBM_AUTOTUNE_STEPS        Steps per measurement (default: 3000)" \
         "  GLBM_AUTOTUNE_REPETITIONS  Measurements per candidate (default: 2)" \
         "  GLBM_AUTOTUNE_CANDIDATES   Space-separated BXxBYxBZ list" \
-        "  GLBM_AUTOTUNE_BLOCK_X      X sizes used by the default search" \
-        "  GLBM_AUTOTUNE_BLOCK_Y      Y sizes used by the default search" \
-        "  GLBM_AUTOTUNE_BLOCK_Z      Z sizes used by the default search"
+        "  GLBM_AUTOTUNE_BLOCK_X      X sizes (default: ${default_block_x_values})" \
+        "  GLBM_AUTOTUNE_BLOCK_Y      Y sizes (default: ${default_block_y_values})" \
+        "  GLBM_AUTOTUNE_BLOCK_Z      Z sizes (default: ${default_block_z_values})"
 }
 
 for argument in "$@"; do
@@ -87,12 +94,6 @@ for ((device_offset=0; device_offset<num_gpus; ++device_offset)); do
     visible_devices+="${physical_device}"
 done
 
-if [[ "${precision}" == "double" ]]; then
-    scalar_bytes=8
-else
-    scalar_bytes=4
-fi
-
 gpu_record="$(nvidia-smi -i "${visible_devices}" --query-gpu=uuid,name,compute_cap,driver_version --format=csv,noheader,nounits)"
 cuda_record="$(nvcc --version | sed -n 's/.*release \([^,]*\).*/\1/p')"
 source_record="$({
@@ -104,7 +105,9 @@ source_record="$({
 case_record="$(sha256sum "${case_file}" | awk '{print $1}')"
 tuning_record="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
     "${tuning_steps}" "${repetitions}" "${GLBM_AUTOTUNE_CANDIDATES:-}" \
-    "${GLBM_AUTOTUNE_BLOCK_X:-8 16 32 64}" "${GLBM_AUTOTUNE_BLOCK_Y:-1 2 4 8}" "${GLBM_AUTOTUNE_BLOCK_Z:-1 2 4}" \
+    "${GLBM_AUTOTUNE_BLOCK_X:-${default_block_x_values}}" \
+    "${GLBM_AUTOTUNE_BLOCK_Y:-${default_block_y_values}}" \
+    "${GLBM_AUTOTUNE_BLOCK_Z:-${default_block_z_values}}" \
     | sha256sum | awk '{print $1}')"
 cache_key="$(printf '%s\n%s\n%s\n%s\n%s\n' "${gpu_record}" "${cuda_record}" "${source_record}" "${case_record}" "${tuning_record}" | sha256sum | awk '{print substr($1,1,16)}')"
 cache_dir="${project_dir}/.autotune/${cache_key}"
@@ -128,9 +131,9 @@ else
     if [[ -n "${GLBM_AUTOTUNE_CANDIDATES:-}" ]]; then
         read -r -a candidates <<< "${GLBM_AUTOTUNE_CANDIDATES}"
     else
-        read -r -a block_x_values <<< "${GLBM_AUTOTUNE_BLOCK_X:-8 16 32 64}"
-        read -r -a block_y_values <<< "${GLBM_AUTOTUNE_BLOCK_Y:-1 2 4 8}"
-        read -r -a block_z_values <<< "${GLBM_AUTOTUNE_BLOCK_Z:-1 2 4}"
+        read -r -a block_x_values <<< "${GLBM_AUTOTUNE_BLOCK_X:-${default_block_x_values}}"
+        read -r -a block_y_values <<< "${GLBM_AUTOTUNE_BLOCK_Y:-${default_block_y_values}}"
+        read -r -a block_z_values <<< "${GLBM_AUTOTUNE_BLOCK_Z:-${default_block_z_values}}"
         for bx in "${block_x_values[@]}"; do
             for by in "${block_y_values[@]}"; do
                 for bz in "${block_z_values[@]}"; do
@@ -148,7 +151,12 @@ else
         printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$@" >> "${results_file}"
     }
 
-    best_mlups=0
+    format_mlups_milli() {
+        local value_milli="$1"
+        printf '%d.%03d' "$((value_milli / 1000))" "$((value_milli % 1000))"
+    }
+
+    best_mlups_milli=-1
     best_block=""
 
     printf 'Autotuning %s candidate(s), %s repetition(s) of %s steps...\n' "${#candidates[@]}" "${repetitions}" "${tuning_steps}"
@@ -163,11 +171,12 @@ else
         by="${BASH_REMATCH[2]}"
         bz="${BASH_REMATCH[3]}"
         threads=$((bx * by * bz))
-        shared_bytes=$(((bx + 2) * (by + 2) * (bz + 2) * 10 * scalar_bytes))
+        # gpuStreamMomentsAB reads neighbouring moments directly from the
+        # source state, so block candidates do not allocate a shared halo.
+        shared_bytes=0
 
-        # 48 KiB is the portable static shared-memory limit for these kernels.
-        if ((threads > 1024 || nx % bx != 0 || nx % by != 0 || nz % bz != 0 || shared_bytes > 49152)); then
-            printf 'Skipping %s (threads=%s, shared=%s bytes, or incompatible domain)\n' "${candidate}" "${threads}" "${shared_bytes}"
+        if ((bx < 1 || by < 1 || bz < 1 || bx > 1024 || by > 1024 || bz > 64 || threads > 1024)); then
+            printf 'Skipping %s (invalid CUDA block dimensions or threads=%s)\n' "${candidate}" "${threads}"
             append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
                 "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "" "" "incompatible"
             continue
@@ -196,7 +205,7 @@ else
             continue
         fi
 
-        total_mlups=0
+        total_mlups_milli=0
         valid_runs=0
         run_values=""
         run_status="ok"
@@ -218,6 +227,7 @@ else
                 }
                 END {if (value != "") print value}
             ')"
+            mlups="${mlups/,/.}"
             if [[ ! "${mlups}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
                 printf 'Candidate %s did not report MLUPS.\n%s\n' "${candidate}" "${output}" >&2
                 run_status="invalid_output"
@@ -228,7 +238,8 @@ else
                 run_values+=";"
             fi
             run_values+="${mlups}"
-            total_mlups="$(awk -v a="${total_mlups}" -v b="${mlups}" 'BEGIN {printf "%.9f", a+b}')"
+            mlups_milli="$(awk -v value="${mlups}" 'BEGIN {printf "%.0f", value * 1000}')"
+            total_mlups_milli=$((total_mlups_milli + mlups_milli))
             valid_runs=$((valid_runs + 1))
         done
 
@@ -238,12 +249,13 @@ else
             continue
         fi
 
-        average_mlups="$(awk -v total="${total_mlups}" -v count="${valid_runs}" 'BEGIN {printf "%.3f", total/count}')"
+        average_mlups_milli=$(((total_mlups_milli + valid_runs / 2) / valid_runs))
+        average_mlups="$(format_mlups_milli "${average_mlups_milli}")"
         printf '  %s average: %s MLUPS\n' "${candidate}" "${average_mlups}"
         append_result "${candidate}" "${bx}" "${by}" "${bz}" "${threads}" "${shared_bytes}" \
             "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" "${run_values}" "${average_mlups}" "ok"
-        if awk -v candidate_value="${average_mlups}" -v best_value="${best_mlups}" 'BEGIN {exit !(candidate_value > best_value)}'; then
-            best_mlups="${average_mlups}"
+        if ((average_mlups_milli > best_mlups_milli)); then
+            best_mlups_milli="${average_mlups_milli}"
             best_block="${candidate}"
         fi
     done
@@ -253,7 +265,7 @@ else
         exit 1
     fi
     IFS=x read -r BEST_BLOCK_X BEST_BLOCK_Y BEST_BLOCK_Z <<< "${best_block}"
-    BEST_MLUPS="${best_mlups}"
+    BEST_MLUPS="$(format_mlups_milli "${best_mlups_milli}")"
     printf 'BEST_BLOCK_X=%s\nBEST_BLOCK_Y=%s\nBEST_BLOCK_Z=%s\nBEST_MLUPS=%s\nMESH_NX=%s\nMESH_NY=%s\nMESH_NZ=%s\nLOCAL_NZ=%s\nREYNOLDS=%s\nNUM_GPUS=%s\nPRECISION=%s\nAUTOTUNE_STEPS=%s\nAUTOTUNE_REPETITIONS=%s\n' \
         "${BEST_BLOCK_X}" "${BEST_BLOCK_Y}" "${BEST_BLOCK_Z}" "${BEST_MLUPS}" \
         "${nx}" "${nx}" "${global_nz}" "${nz}" "${reynolds}" "${num_gpus}" "${precision}" "${tuning_steps}" "${repetitions}" > "${result_file}"

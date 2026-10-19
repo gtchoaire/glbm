@@ -45,8 +45,8 @@ void reportProgress(const size_t completed_steps, const size_t executed_steps, c
   const auto eta_minutes = (eta % 3600) / 60;
   const auto eta_seconds = eta % 60;
 
-  const double wall_mlups = calculateMlups(NUMBER_LBM_NODES * NUM_GPUS, executed_steps, wall_seconds);
-  const double device_mlups = calculateMlups(NUMBER_LBM_NODES * NUM_GPUS, executed_steps, device_seconds);
+  const double wall_mlups = calculateMlups(NUMBER_PHYSICAL_LBM_NODES * NUM_GPUS, executed_steps, wall_seconds);
+  const double device_mlups = calculateMlups(NUMBER_PHYSICAL_LBM_NODES * NUM_GPUS, executed_steps, device_seconds);
 
   std::printf("\rStep %010zu / %010d | %6.2f%% | "
               "Wall MLUPS %6.0f | "
@@ -208,8 +208,6 @@ void runSimulation()
       auto wall_stop = std::chrono::steady_clock::now();
       wall_seconds += std::chrono::duration<double>(wall_stop - wall_start).count();
 
-      // std::printf("Milli and seconds | %6.6f | %6.6f |  \n",
-      //             segment_milliseconds, wall_seconds);
     }
 
     if (save_vti || save_binary || save_kinetic_energy || save_checkpoint)

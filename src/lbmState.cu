@@ -34,12 +34,8 @@ __global__ void gpuInitializeEquilibrium(LBMState state)
     dfloat pop[Q];
 #pragma unroll
     for (int i = 0; i < Q; ++i)
-        pop[i] = f_eq(
-            w[i] * rho,
-            static_cast<dfloat>(3) *
-                (ux * cx[i] + uy * cy[i] + uz * cz[i]),
-            static_cast<dfloat>(1) - static_cast<dfloat>(1.5) *
-                (ux * ux + uy * uy + uz * uz));
+        pop[i] = f_eq(w[i] * rho, static_cast<dfloat>(3) *(ux * cx[i] + uy * cy[i] + uz * cz[i]),
+            static_cast<dfloat>(1) - static_cast<dfloat>(1.5) * (ux * ux + uy * uy + uz * uz));
 
     constexpr dfloat inverse_rho = static_cast<dfloat>(1) / rho;
     const dfloat mxx = (pop[1] + pop[2] + pop[7] + pop[8] + pop[9] +

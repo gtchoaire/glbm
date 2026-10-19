@@ -86,7 +86,8 @@ inline void totalKineticEnergy(const std::vector<LBMState *> &states, const size
                 }
     }
 
-    const double total_nodes = static_cast<double>(states.size()) * static_cast<double>(NUMBER_LBM_NODES);
+    const double total_nodes = static_cast<double>(states.size()) *
+        static_cast<double>(NUMBER_PHYSICAL_LBM_NODES);
     constexpr double reference_velocity = static_cast<double>(U_MAX);
     const double normalized_energy = 0.5 * velocity_squared_sum / (total_nodes * reference_velocity * reference_velocity);
 

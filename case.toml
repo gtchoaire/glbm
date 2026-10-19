@@ -3,7 +3,7 @@ n_size = 512
 aspect_ratio = 1
 
 [simulation]
-num_gpus = 2
+num_gpus = 1
 steps = 1000000
 print_interval = 1000
 precision = "float"
@@ -18,12 +18,12 @@ reconstruction_order = 2
 
 [cuda]
 block_x = 64
-block_y = 4
-block_z = 1
+block_y = 1
+block_z = 8
 
 [output]
 vti = false
-interval = 100000
+interval = 5000
 
 binary = false
 binary_interval = 100000

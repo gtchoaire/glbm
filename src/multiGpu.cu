@@ -47,21 +47,25 @@ bool validateMultiGpuTopology()
 void allocateMomentHalos(DeviceDomain &domain)
 {
     checkCuda(cudaSetDevice(domain.device_id));
-    checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.back_send), HALO_PLANE_BYTES));
-    checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.front_send), HALO_PLANE_BYTES));
-    checkCuda(cudaMallocHost(reinterpret_cast<void **>(&domain.population_halos.h_back_staging), HALO_PLANE_BYTES));
-    checkCuda(cudaMallocHost(reinterpret_cast<void **>(&domain.population_halos.h_front_staging), HALO_PLANE_BYTES));
-    checkCuda(cudaStreamCreateWithFlags(&domain.stream, cudaStreamNonBlocking));
-    checkCuda(cudaStreamCreateWithFlags(&domain.interior_stream, cudaStreamNonBlocking));
-    checkCuda(cudaEventCreateWithFlags(&domain.interior_complete, cudaEventDisableTiming));
-    checkCuda(cudaEventCreateWithFlags(&domain.boundary_complete, cudaEventDisableTiming));
-    checkCuda(cudaEventCreateWithFlags(&domain.send_complete, cudaEventDisableTiming));
-    checkCuda(cudaEventCreateWithFlags(&domain.receive_complete, cudaEventDisableTiming));
-    checkCuda(cudaEventRecord(domain.receive_complete, domain.stream));
-    if (!domain.info.has_back_wall)
-        checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.remote.back), HALO_PLANE_BYTES));
-    if (!domain.info.has_front_wall)
-        checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.remote.front), HALO_PLANE_BYTES));
+
+    if constexpr (NUM_GPUS == 2)
+    {
+        checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.back_send), HALO_PLANE_BYTES));
+        checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.front_send), HALO_PLANE_BYTES));
+        checkCuda(cudaMallocHost(reinterpret_cast<void **>(&domain.population_halos.h_back_staging), HALO_PLANE_BYTES));
+        checkCuda(cudaMallocHost(reinterpret_cast<void **>(&domain.population_halos.h_front_staging), HALO_PLANE_BYTES));
+        checkCuda(cudaStreamCreateWithFlags(&domain.stream, cudaStreamNonBlocking));
+        checkCuda(cudaStreamCreateWithFlags(&domain.interior_stream, cudaStreamNonBlocking));
+        checkCuda(cudaEventCreateWithFlags(&domain.interior_complete, cudaEventDisableTiming));
+        checkCuda(cudaEventCreateWithFlags(&domain.boundary_complete, cudaEventDisableTiming));
+        checkCuda(cudaEventCreateWithFlags(&domain.send_complete, cudaEventDisableTiming));
+        checkCuda(cudaEventCreateWithFlags(&domain.receive_complete, cudaEventDisableTiming));
+        checkCuda(cudaEventRecord(domain.receive_complete, domain.stream));
+        if (!domain.info.has_back_wall)
+            checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.remote.back), HALO_PLANE_BYTES));
+        if (!domain.info.has_front_wall)
+            checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.remote.front), HALO_PLANE_BYTES));
+    }
 
     checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.remote.initial_wall), Q * sizeof(dfloat)));
 }
@@ -83,22 +87,16 @@ void beginMomentHaloExchange(
 
     checkCuda(cudaSetDevice(back.device_id));
     checkCuda(cudaStreamWaitEvent(back.interior_stream, back.boundary_complete, 0));
-    gpuPackFrontInterfacePopulations<<<grid, block, 0, back.stream>>>(
-        back_state, NZ - 1, back.population_halos.front_send);
+    gpuPackFrontInterfacePopulations<<<grid, block, 0, back.stream>>>(back_state, NZ - 1, back.population_halos.front_send);
     checkCuda(cudaGetLastError());
-    checkCuda(cudaMemcpyAsync(back.population_halos.h_front_staging,
-        back.population_halos.front_send, HALO_PLANE_BYTES,
-        cudaMemcpyDeviceToHost, back.stream));
+    checkCuda(cudaMemcpyAsync(back.population_halos.h_front_staging, back.population_halos.front_send, HALO_PLANE_BYTES, cudaMemcpyDeviceToHost, back.stream));
     checkCuda(cudaEventRecord(back.send_complete, back.stream));
 
     checkCuda(cudaSetDevice(front.device_id));
     checkCuda(cudaStreamWaitEvent(front.interior_stream, front.boundary_complete, 0));
-    gpuPackBackInterfacePopulations<<<grid, block, 0, front.stream>>>(
-        front_state, 0, front.population_halos.back_send);
+    gpuPackBackInterfacePopulations<<<grid, block, 0, front.stream>>>(front_state, 0, front.population_halos.back_send);
     checkCuda(cudaGetLastError());
-    checkCuda(cudaMemcpyAsync(front.population_halos.h_back_staging,
-        front.population_halos.back_send, HALO_PLANE_BYTES,
-        cudaMemcpyDeviceToHost, front.stream));
+    checkCuda(cudaMemcpyAsync(front.population_halos.h_back_staging,front.population_halos.back_send, HALO_PLANE_BYTES, cudaMemcpyDeviceToHost, front.stream));
     checkCuda(cudaEventRecord(front.send_complete, front.stream));
 }
 
@@ -107,35 +105,36 @@ void completeMomentHaloExchange(DeviceDomain &back, DeviceDomain &front)
     checkCuda(cudaSetDevice(back.device_id));
     checkCuda(cudaEventSynchronize(back.send_complete));
     checkCuda(cudaSetDevice(front.device_id));
-    checkCuda(cudaMemcpyAsync(front.population_halos.remote.back,
-        back.population_halos.h_front_staging, HALO_PLANE_BYTES,
-        cudaMemcpyHostToDevice, front.stream));
+    checkCuda(cudaMemcpyAsync(front.population_halos.remote.back, back.population_halos.h_front_staging, HALO_PLANE_BYTES,cudaMemcpyHostToDevice, front.stream));
     checkCuda(cudaEventRecord(front.receive_complete, front.stream));
 
     checkCuda(cudaSetDevice(front.device_id));
     checkCuda(cudaEventSynchronize(front.send_complete));
     checkCuda(cudaSetDevice(back.device_id));
-    checkCuda(cudaMemcpyAsync(back.population_halos.remote.front,
-        front.population_halos.h_back_staging, HALO_PLANE_BYTES,
-        cudaMemcpyHostToDevice, back.stream));
+    checkCuda(cudaMemcpyAsync(back.population_halos.remote.front, front.population_halos.h_back_staging, HALO_PLANE_BYTES, cudaMemcpyHostToDevice, back.stream));
     checkCuda(cudaEventRecord(back.receive_complete, back.stream));
 }
 
 void freeMomentHalos(DeviceDomain &domain)
 {
     checkCuda(cudaSetDevice(domain.device_id));
-    cudaFree(domain.population_halos.back_send);
-    cudaFree(domain.population_halos.front_send);
-    cudaFree(domain.population_halos.remote.back);
-    cudaFree(domain.population_halos.remote.front);
+
+    if constexpr (NUM_GPUS == 2)
+    {
+        cudaFree(domain.population_halos.back_send);
+        cudaFree(domain.population_halos.front_send);
+        cudaFree(domain.population_halos.remote.back);
+        cudaFree(domain.population_halos.remote.front);
+        cudaFreeHost(domain.population_halos.h_back_staging);
+        cudaFreeHost(domain.population_halos.h_front_staging);
+        cudaEventDestroy(domain.interior_complete);
+        cudaEventDestroy(domain.boundary_complete);
+        cudaEventDestroy(domain.send_complete);
+        cudaEventDestroy(domain.receive_complete);
+        cudaStreamDestroy(domain.interior_stream);
+        cudaStreamDestroy(domain.stream);
+    }
+
     cudaFree(domain.population_halos.remote.initial_wall);
-    cudaFreeHost(domain.population_halos.h_back_staging);
-    cudaFreeHost(domain.population_halos.h_front_staging);
-    cudaEventDestroy(domain.interior_complete);
-    cudaEventDestroy(domain.boundary_complete);
-    cudaEventDestroy(domain.send_complete);
-    cudaEventDestroy(domain.receive_complete);
-    cudaStreamDestroy(domain.interior_stream);
-    cudaStreamDestroy(domain.stream);
     domain.population_halos = {};
 }

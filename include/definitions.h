@@ -29,8 +29,6 @@ constexpr int BLOCK_NY = BLOCK_NY_VALUE;
 constexpr int BLOCK_NZ = BLOCK_NZ_VALUE;
 static_assert(BLOCK_NX > 0 && BLOCK_NY > 0 && BLOCK_NZ > 0, "CUDA block dimensions must be positive");
 static_assert(BLOCK_NX * BLOCK_NY * BLOCK_NZ <= 1024, "CUDA block cannot exceed 1024 threads");
-static_assert(NX % BLOCK_NX == 0 && NY % BLOCK_NY == 0 && NZ % BLOCK_NZ == 0,
-              "Domain dimensions must be divisible by CUDA block dimensions");
 
 // Logical tile used by the validated AB first-step reconstruction.  Keep it
 // independent from the CUDA block geometry so launch tuning does not alter
@@ -41,13 +39,17 @@ constexpr int AB_TILE_NZ = 4;
 
 constexpr size_t BLOCK_LBM_SIZE = BLOCK_NX * BLOCK_NY * BLOCK_NZ;
 
-constexpr size_t NUM_BLOCK_X = NX / BLOCK_NX;
-constexpr size_t NUM_BLOCK_Y = NY / BLOCK_NY;
-constexpr size_t NUM_BLOCK_Z = NZ / BLOCK_NZ;
+constexpr size_t NUM_BLOCK_X = (NX + BLOCK_NX - 1) / BLOCK_NX;
+constexpr size_t NUM_BLOCK_Y = (NY + BLOCK_NY - 1) / BLOCK_NY;
+constexpr size_t NUM_BLOCK_Z = (NZ + BLOCK_NZ - 1) / BLOCK_NZ;
 
 constexpr size_t NUM_BLOCK = NUM_BLOCK_X * NUM_BLOCK_Y * NUM_BLOCK_Z;
 
+// AoSoA storage includes the inactive lanes of partial edge blocks. Physical
+// node counts must use NUMBER_PHYSICAL_LBM_NODES for metrics and reductions.
 constexpr size_t NUMBER_LBM_NODES = NUM_BLOCK * BLOCK_LBM_SIZE;
+constexpr size_t NUMBER_PHYSICAL_LBM_NODES =
+    static_cast<size_t>(NX) * NY * NZ;
 constexpr size_t MEM_SIZE_MOM = sizeof(dfloat) * NUMBER_LBM_NODES * NUMBER_MOMENTS;
 
 #ifndef SAVE_VTI_OUTPUT_VALUE
