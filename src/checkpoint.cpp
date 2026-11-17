@@ -1,5 +1,6 @@
 #include "../include/checkpoint.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -9,14 +10,16 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "../include/definitions.h"
 #include "../include/globalFunctions.cuh"
 #include "../include/lbmState.cuh"
+#include "../include/temporalAverages.cuh"
 
 namespace
 {
-constexpr int CHECKPOINT_VERSION = 2;
+constexpr int CHECKPOINT_VERSION = 3;
 constexpr int MIN_SUPPORTED_CHECKPOINT_VERSION = 1;
 
 constexpr const char *precisionName()
@@ -62,9 +65,27 @@ void writeCheckpoint(
     const std::vector<LBMState *> &states,
     const size_t completed_step,
     const std::string &path_string,
-    const std::filesystem::path &output_directory)
+    const std::filesystem::path &output_directory,
+    const CheckpointStatistics *statistics)
 {
     require(states.size() == static_cast<size_t>(NUM_GPUS), "incorrect number of subdomains while writing");
+
+    const bool write_statistics = statistics != nullptr && statistics->present;
+    if (write_statistics)
+    {
+        require(statistics->sample_interval > 0, "invalid statistics sample interval");
+        require(statistics->end_step > statistics->start_step, "invalid statistics window");
+        require(statistics->samples > 0, "statistics marked present with zero samples");
+        require(statistics->means.size() == states.size(), "incorrect number of statistics subdomains");
+        require(completed_step > statistics->start_step, "statistics cannot precede their start step");
+        const size_t last_step = std::min(completed_step, statistics->end_step);
+        const size_t expected_samples =
+            (last_step - statistics->start_step) / statistics->sample_interval;
+        require(statistics->samples == expected_samples, "statistics sample count does not match checkpoint step");
+        for (const auto &local_means : statistics->means)
+            require(local_means.size() == static_cast<size_t>(NUM_AVERAGE_FIELDS) * NUMBER_LBM_NODES,
+                    "invalid statistics buffer size");
+    }
 
     const std::filesystem::path path(path_string);
     require(!path.empty(), "empty output path");
@@ -91,7 +112,16 @@ void writeCheckpoint(
                               .lexically_normal().string()) << '\n'
            << "state post_collision_moments\n"
            << "step " << completed_step << '\n'
-           << "data\n";
+           << "statistics " << (write_statistics ? 1 : 0) << '\n';
+
+    if (write_statistics)
+        output << "stats_fields " << NUM_AVERAGE_FIELDS << '\n'
+               << "stats_start_step " << statistics->start_step << '\n'
+               << "stats_end_step " << statistics->end_step << '\n'
+               << "stats_sample_interval " << statistics->sample_interval << '\n'
+               << "stats_samples " << statistics->samples << '\n';
+
+    output << "data\n";
 
     for (const LBMState *state : states)
         for (int z = 0; z < NZ; ++z)
@@ -106,6 +136,22 @@ void writeCheckpoint(
                     }
                 }
 
+    if (write_statistics)
+    {
+        // Canonical field-major global ordering, independent of GPU partition.
+        for (int field = 0; field < NUM_AVERAGE_FIELDS; ++field)
+            for (const auto &local_means : statistics->means)
+                for (int z = 0; z < NZ; ++z)
+                    for (int y = 0; y < NY; ++y)
+                        for (int x = 0; x < NX; ++x)
+                        {
+                            const size_t index =
+                                static_cast<size_t>(field) * NUMBER_LBM_NODES + scalarIndex(x, y, z);
+                            const dfloat value = local_means[index];
+                            output.write(reinterpret_cast<const char *>(&value), sizeof(value));
+                        }
+    }
+
     output.close();
     require(static_cast<bool>(output), "failed while writing data");
 
@@ -118,7 +164,8 @@ size_t loadCheckpoint(
     const std::vector<std::unique_ptr<DeviceDomain>> &domains,
     const std::vector<LBMState *> &states,
     const std::string &path,
-    std::filesystem::path &output_directory)
+    std::filesystem::path &output_directory,
+    CheckpointStatistics *statistics)
 {
     require(domains.size() == states.size(), "inconsistent destination domains");
     require(states.size() == static_cast<size_t>(NUM_GPUS), "incorrect number of destination subdomains");
@@ -182,6 +229,36 @@ size_t loadCheckpoint(
 
     size_t completed_step = 0;
     parseLine(readLine(input), "step", completed_step);
+
+    bool file_has_statistics = false;
+    CheckpointStatistics loaded_statistics;
+    if (version >= 3)
+    {
+        int flag = 0;
+        parseLine(readLine(input), "statistics", flag);
+        require(flag == 0 || flag == 1, "invalid statistics flag");
+        file_has_statistics = flag == 1;
+        if (file_has_statistics)
+        {
+            int fields = 0;
+            parseLine(readLine(input), "stats_fields", fields);
+            require(fields == NUM_AVERAGE_FIELDS, "statistics field count does not match this build");
+            parseLine(readLine(input), "stats_start_step", loaded_statistics.start_step);
+            parseLine(readLine(input), "stats_end_step", loaded_statistics.end_step);
+            parseLine(readLine(input), "stats_sample_interval", loaded_statistics.sample_interval);
+            parseLine(readLine(input), "stats_samples", loaded_statistics.samples);
+            require(loaded_statistics.sample_interval > 0, "invalid stored statistics interval");
+            require(loaded_statistics.end_step > loaded_statistics.start_step, "invalid stored statistics window");
+            require(completed_step > loaded_statistics.start_step, "statistics saved before their start");
+            const size_t last_step = std::min(completed_step, loaded_statistics.end_step);
+            require(loaded_statistics.samples > 0 &&
+                        loaded_statistics.samples ==
+                            (last_step - loaded_statistics.start_step) / loaded_statistics.sample_interval,
+                    "stored statistics samples do not match checkpoint step");
+            require(statistics != nullptr, "checkpoint contains statistics but no restore destination was supplied");
+            loaded_statistics.present = true;
+        }
+    }
     require(readLine(input) == "data", "missing data marker");
 
     for (LBMState *state : states)
@@ -199,6 +276,26 @@ size_t loadCheckpoint(
                     }
                 }
 
+    if (file_has_statistics)
+    {
+        loaded_statistics.means.resize(states.size());
+        for (auto &local_means : loaded_statistics.means)
+            local_means.assign(static_cast<size_t>(NUM_AVERAGE_FIELDS) * NUMBER_LBM_NODES,
+                               static_cast<dfloat>(0));
+
+        for (int field = 0; field < NUM_AVERAGE_FIELDS; ++field)
+            for (auto &local_means : loaded_statistics.means)
+                for (int z = 0; z < NZ; ++z)
+                    for (int y = 0; y < NY; ++y)
+                        for (int x = 0; x < NX; ++x)
+                        {
+                            const size_t index =
+                                static_cast<size_t>(field) * NUMBER_LBM_NODES + scalarIndex(x, y, z);
+                            input.read(reinterpret_cast<char *>(&local_means[index]), sizeof(dfloat));
+                            require(static_cast<bool>(input), "truncated statistics data");
+                        }
+    }
+
     char trailing_byte = 0;
     input.read(&trailing_byte, 1);
     require(input.gcount() == 0, "unexpected trailing data");
@@ -210,6 +307,9 @@ size_t loadCheckpoint(
             states[subdomain]->h_moments, MEM_SIZE_MOM,
             cudaMemcpyHostToDevice));
     }
+
+    if (statistics != nullptr)
+        *statistics = std::move(loaded_statistics);
 
     return completed_step;
 }

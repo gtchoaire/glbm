@@ -1,20 +1,26 @@
 [domain]
-n_size = 512
+n_size = 128
 aspect_ratio = 1
 
 [simulation]
 num_gpus = 1
-steps = 1000000
+steps = 992188
 print_interval = 1000
 precision = "float"
 
 [physics]
-reynolds_number = 10000.0
+reynolds_number = 3200.0
 u_max = 0.0256
 
 [lattice]
 stencil = "D3Q27"
 reconstruction_order = 2
+
+[statistics]
+enabled = true
+start_t_star = 100.0
+end_t_star = 200.0
+sample_interval = 1
 
 [cuda]
 block_x = 64
@@ -23,17 +29,17 @@ block_z = 8
 
 [output]
 vti = false
-interval = 5000
+interval = 10000
 
 binary = false
-binary_interval = 100000
+binary_interval = 10000
 
 kinetic_energy = false
-kinetic_energy_interval = 5000
+kinetic_energy_interval = 10000
 
 [checkpoint]
-checkpoint_interval = 1000000
-checkpoint_path = "checkpoint.glbm"
+checkpoint_interval = 50000
+checkpoint_path = "checkpoint_128_avg.glbm"
 # To resume, use e.g. "output/yyyymmdd_hhmm/checkpoint.glbm".
 restart_path = ""
 

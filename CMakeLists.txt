@@ -85,6 +85,23 @@ read_config(checkpoint_interval CHECKPOINT_INTERVAL)
 read_config(checkpoint_path CHECKPOINT_PATH)
 read_config(restart_path RESTART_PATH)
 
+# Temporal statistics
+read_config(enabled STATISTICS_ENABLED)
+read_config(start_t_star STATISTICS_START_T_STAR)
+read_config(end_t_star STATISTICS_END_T_STAR)
+read_config(sample_interval STATISTICS_SAMPLE_INTERVAL)
+
+if(STATISTICS_ENABLED)
+    set(STATISTICS_ENABLED 1)
+else()
+    set(STATISTICS_ENABLED 0)
+endif()
+
+if(NOT STATISTICS_SAMPLE_INTERVAL MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR
+        "statistics.sample_interval must be a positive integer")
+endif()
+
 foreach(variable
         NUM_GPUS SIMULATION_STEPS PRINT_INTERVAL
         BLOCK_X BLOCK_Y BLOCK_Z SAVE_VTI SAVE_BINARY SAVE_KINETIC_ENERGY
@@ -126,6 +143,7 @@ set(GLBM_CORE_SOURCES
     src/mlbm.cu
     src/multiGpu.cu
     src/nodeType.cu
+    src/temporalAverages.cu
 )
 
 # These files include CUDA headers and device-side declarations.
@@ -133,7 +151,9 @@ set_source_files_properties(src/checkpoint.cpp src/output.cpp
     PROPERTIES LANGUAGE CUDA)
 
 add_library(glbm_core OBJECT ${GLBM_CORE_SOURCES})
-add_library(glbm_output OBJECT src/output.cpp)
+add_library(glbm_output OBJECT 
+    src/output.cpp
+    src/strainRate.cu)
 add_library(glbm_simulation OBJECT src/simulation.cu)
 add_executable(glbm
     src/main.cu
@@ -181,6 +201,10 @@ target_compile_definitions(glbm_simulation PRIVATE
     SAVE_KINETIC_ENERGY_OUTPUT_VALUE=${SAVE_KINETIC_ENERGY}
     KINETIC_ENERGY_OUTPUT_INTERVAL=${KINETIC_ENERGY_INTERVAL}
     CHECKPOINT_INTERVAL_VALUE=${CHECKPOINT_INTERVAL}
+    STATISTICS_ENABLED_VALUE=${STATISTICS_ENABLED}
+    STATISTICS_START_T_STAR_VALUE=${STATISTICS_START_T_STAR}
+    STATISTICS_END_T_STAR_VALUE=${STATISTICS_END_T_STAR}
+    STATISTICS_SAMPLE_INTERVAL_VALUE=${STATISTICS_SAMPLE_INTERVAL}
     CHECKPOINT_PATH_VALUE=\"${CHECKPOINT_PATH}\"
     RESTART_PATH_VALUE=\"${RESTART_PATH}\"
 )

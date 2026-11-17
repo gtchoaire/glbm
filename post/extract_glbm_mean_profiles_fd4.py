@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Extract actual time-averaged profiles; compare FD2 with FD4 near boundaries.
+
+The v3 payload stores 10 LBM moments per node (node-major), followed by
+10 statistical means in field-major, global z/y/x (x-fastest) order.
+
+Example:
+    python3 extract_glbm_mean_profiles.py build/output/DATE/checkpoint_stats_128.glbm
+    python3 extract_glbm_mean_profiles.py checkpoint.glbm --out post/means --save-fields
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+from pathlib import Path
+
+import numpy as np
+
+FIELDS = ("rho_avg", "ux_avg", "uy_avg", "uz_avg", "Sxx_avg",
+          "Sxy_avg", "Sxz_avg", "Syy_avg", "Syz_avg", "Szz_avg")
+
+
+def read_header(path: Path) -> tuple[dict[str, str], int]:
+    fields: dict[str, str] = {}
+    with path.open("rb") as file:
+        while True:
+            line = file.readline()
+            if not line:
+                raise ValueError("Checkpoint without a complete 'data' header marker")
+            line = line.decode("utf-8").strip()
+            if line == "data":
+                return fields, file.tell()
+            key, separator, value = line.partition(" ")
+            if not separator:
+                raise ValueError(f"Malformed header line: {line!r}")
+            fields[key] = value
+
+
+def get_means(path: Path):
+    header, payload_offset = read_header(path)
+    if header.get("GLBM_CHECKPOINT") != "3":
+        raise ValueError("This script requires GLBM_CHECKPOINT 3")
+    if header.get("statistics") != "1":
+        raise ValueError("Checkpoint contains no time-averaged fields (statistics 0)")
+    if int(header["stats_fields"]) != len(FIELDS):
+        raise ValueError("Unexpected statistics field count")
+
+    nx, ny, nz = map(int, header["dimensions"].split())
+    if min(nx, ny, nz) < 3:
+        raise ValueError("Grid dimensions must each be at least 3 for edge_order=2")
+    num_moments = int(header["moments"])
+    dtype = {"float32": np.dtype("<f4"), "float64": np.dtype("<f8")}.get(
+        header["precision"])
+    if dtype is None:
+        raise ValueError(f"Unsupported precision: {header['precision']}")
+
+    num_nodes = nx * ny * nz
+    means_offset = payload_offset + num_nodes * num_moments * dtype.itemsize
+    expected_size = means_offset + num_nodes * len(FIELDS) * dtype.itemsize
+    actual_size = path.stat().st_size
+    if actual_size != expected_size:
+        raise ValueError(
+            f"Unexpected checkpoint size: {actual_size} bytes, "
+            f"expected {expected_size} bytes; check format and file completeness"
+        )
+    # Memory mapping avoids loading the entire 128^3 / 256^3 dataset into RAM.
+    means = np.memmap(
+        path, mode="r", dtype=dtype, offset=means_offset,
+        shape=(len(FIELDS), nz, ny, nx), order="C"
+    )
+    return header, means, (nx, ny, nz)
+
+
+def derivative_fd4(field: np.ndarray, axis: int, h: float = 1.0) -> np.ndarray:
+    """Fourth-order first derivative: 5-point centered or one-sided stencils.
+
+    Nodes 0,1,n-2,n-1 use one-sided 5-point stencils.
+    Nodes 2..n-3 use the centered 5-point stencil.
+    """
+    f = np.moveaxis(np.asarray(field, dtype=np.float64), axis, 0)
+    if f.shape[0] < 5:
+        raise ValueError("Fourth-order derivative needs at least 5 nodes")
+
+    d = np.empty_like(f)
+    d[0] = (-25*f[0] + 48*f[1] - 36*f[2] + 16*f[3] - 3*f[4]) / (12*h)
+    d[1] = (-3*f[0] - 10*f[1] + 18*f[2] - 6*f[3] + f[4]) / (12*h)
+    d[2:-2] = (f[:-4] - 8*f[1:-3] + 8*f[3:-1] - f[4:]) / (12*h)
+    d[-2] = (-f[-5] + 6*f[-4] - 18*f[-3] + 10*f[-2] + 3*f[-1]) / (12*h)
+    d[-1] = (3*f[-5] - 16*f[-4] + 36*f[-3] - 48*f[-2] + 25*f[-1]) / (12*h)
+    return np.moveaxis(d, 0, axis)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("checkpoint", type=Path, help="GLBM checkpoint v3 with statistics")
+    parser.add_argument("--out", type=Path, default=Path("post/mean_profiles"),
+                        help="Directory for CSV outputs")
+    parser.add_argument("--save-fields", action="store_true",
+                        help="Also export each complete mean field to .npy (z,y,x order)")
+    args = parser.parse_args()
+
+    header, means, (nx, ny, nz) = get_means(args.checkpoint)
+    args.out.mkdir(parents=True, exist_ok=True)
+    z = nz // 2
+    length_x = nx - 1
+    length_y = ny - 1
+    ystar = np.arange(ny, dtype=np.float64) / length_y
+
+    # Global z-middle slice (shape: ny, nx).
+    ux = np.asarray(means[FIELDS.index("ux_avg"), z], dtype=np.float64)
+    uy = np.asarray(means[FIELDS.index("uy_avg"), z], dtype=np.float64)
+    sxy = np.asarray(means[FIELDS.index("Sxy_avg"), z], dtype=np.float64)
+    # Lattice unit spacing is 1.  No extra factor L, U, or sqrt(3) is applied.
+    half_dux_dy = 0.5 * np.gradient(ux, 1.0, axis=0, edge_order=2)
+    half_duy_dx = 0.5 * np.gradient(uy, 1.0, axis=1, edge_order=2)
+    sxy_fd = half_dux_dy + half_duy_dx
+    half_dux_dy_fd4 = 0.5 * derivative_fd4(ux, axis=0)
+    half_duy_dx_fd4 = 0.5 * derivative_fd4(uy, axis=1)
+    sxy_fd4 = half_dux_dy_fd4 + half_duy_dx_fd4
+
+    x_profiles = sorted({0, 1, 2, nx // 2, nx - 3, nx - 2, nx - 1})
+    fieldnames = ["x", "x_star", "y", "y_star", "ux_avg", "uy_avg",
+                  "half_dux_dy", "half_duy_dx", "sxy_avg", "sxy_fd", "difference",
+                  "half_dux_dy_fd4", "half_duy_dx_fd4", "sxy_fd4", "difference_fd4"]
+    for x in x_profiles:
+        out = args.out / f"sxy_mean_x{x:03d}.csv"
+        with out.open("w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(fieldnames)
+            for y in range(ny):
+                writer.writerow([
+                    x, x / length_x, y, ystar[y], ux[y, x], uy[y, x],
+                    half_dux_dy[y, x], half_duy_dx[y, x], sxy[y, x],
+                    sxy_fd[y, x], sxy[y, x] - sxy_fd[y, x],
+                    half_dux_dy_fd4[y, x], half_duy_dx_fd4[y, x],
+                    sxy_fd4[y, x], sxy[y, x] - sxy_fd4[y, x]
+                ])
+        interior = (ystar >= 0.05) & (ystar <= 0.80)
+        near_lid = (ystar >= 0.90) & (ystar <= 0.99)
+        err2 = sxy[:, x] - sxy_fd[:, x]
+        err4 = sxy[:, x] - sxy_fd4[:, x]
+        rmse = lambda err, mask: np.sqrt(np.mean(err[mask] ** 2))
+        print(f"x={x:3d} | interior RMSE FD2={rmse(err2, interior):.3e} "
+              f"FD4={rmse(err4, interior):.3e} | "
+              f"near-lid RMSE FD2={rmse(err2, near_lid):.3e} "
+              f"FD4={rmse(err4, near_lid):.3e}")
+
+    if args.save_fields:
+        for i, name in enumerate(FIELDS):
+            dest = args.out / f"{name}.npy"
+            np.save(dest, means[i])
+            print(f"Exported full mean field {dest} (z,y,x)")
+
+    print(f"Checkpoint step: {header['step']}")
+    print(f"Statistical window: [{header['stats_start_step']}, "
+          f"{header['stats_end_step']}] steps | samples: {header['stats_samples']}")
+    print(f"Central z slice: z={z} / {nz - 1}")
+
+
+if __name__ == "__main__":
+    main()
