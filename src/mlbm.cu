@@ -1,5 +1,4 @@
 #include "../include/mlbm.cuh"
-#include "../include/strainRateDebug.cuh"
 
 namespace
 {
@@ -415,27 +414,9 @@ __global__ void gpuStreamMomentsAB(
     myz *= F_M_IJ_SCALE;
     mzz *= F_M_II_SCALE;
 
-// Store the pre-collision moment for validation.
-#if GLBM_ENABLE_SXY_COLLISION_DEBUG
-    const dfloat mxy_pre_collision = mxy;
-#endif
-
     moment_collision(
         rho, ux, uy, uz,
         &mxx, &mxy, &mxz, &myy, &myz, &mzz);
-
-// Compare Sxy from pre- and post-collision moments.
-#if GLBM_ENABLE_SXY_COLLISION_DEBUG
-    debugCompareSxyCollision(
-        ux,
-        uy,
-        mxy_pre_collision,
-        mxy,
-        x,
-        y,
-        z,
-        subdomain);
-#endif
 
     destination.device(M_RHO_INDEX, destination_index) = rho - RHO_0;
     destination.device(M_UX_INDEX, destination_index) = ux;

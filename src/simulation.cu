@@ -16,10 +16,10 @@
 #include "../include/nodeType.h"
 #include "../include/output.h"
 #include "../include/temporalAverages.cuh"
-#include "../include/strainRate.cuh"
-#include <cmath>
 #include <algorithm>
 #include "../include/statisticsConfig.h"
+#include "../include/bmbc.cuh"
+#include "../include/bmbcIO.cuh"
 
 namespace
 {
@@ -240,6 +240,36 @@ void runSimulation()
         }
     }
 
+    // Temporary BMBC integration test.
+    // Disable after validating the implementation.
+    // BMBC statistical uncertainty monitoring.
+    constexpr bool BMBC_ENABLED = BMBC_ENABLED_VALUE != 0;
+
+    BMBCProfiles bmbc;
+
+    if constexpr (BMBC_ENABLED)
+    {
+        if constexpr (NUM_GPUS != 1)
+            throw std::runtime_error(
+                "BMBC integration test currently requires one GPU");
+
+        if constexpr (!STATS_ENABLED)
+            throw std::runtime_error(
+                "BMBC requires temporal statistics enabled");
+
+        checkCuda(cudaSetDevice(domains[0]->device_id));
+
+        allocateBMBCProfiles(bmbc, static_cast<std::size_t>(BMBC_BLOCK_SAMPLES_VALUE), static_cast<std::size_t>(BMBC_INITIAL_CAPACITY_BLOCKS_VALUE));
+        if constexpr (RESTART_ENABLED)
+        {
+            restoreBMBCSnapshot(
+                bmbc,
+                completed_steps,
+                averages[0].samples,
+                std::filesystem::path(RESTART_PATH));
+        }
+    }
+
     // Initializing clock variables
 
     double wall_seconds = 0.0;
@@ -343,6 +373,30 @@ void runSimulation()
                         block,
                         NUM_GPUS == 2 ? domain.stream : nullptr);
                 }
+                if constexpr (BMBC_ENABLED)
+                {
+                    accumulateBMBCProfiles(
+                        bmbc,
+                        *current[0],
+                        nullptr);
+                }
+
+                constexpr std::size_t BMBC_CHECK_EVERY_BLOCKS = 32;
+
+                if constexpr (BMBC_ENABLED)
+                {
+                    if (bmbc.samples_in_block == 0 &&
+                        bmbc.completed_blocks >= BMBC_CHECK_EVERY_BLOCKS &&
+                        bmbc.completed_blocks % BMBC_CHECK_EVERY_BLOCKS == 0)
+                    {
+                        checkCuda(cudaSetDevice(domains[0]->device_id));
+
+                        reportBMBCProfiles(
+                            bmbc,
+                            completed_steps,
+                            nullptr);
+                    }
+                }
             }
         }
 
@@ -427,6 +481,16 @@ void runSimulation()
                 }
 
                 writeCheckpoint(current, completed_steps, checkpoint_output_path.string(), output_directory, checkpoint_stats.present ? &checkpoint_stats : nullptr);
+
+                if constexpr (BMBC_ENABLED)
+                {
+                    checkCuda(cudaSetDevice(domains[0]->device_id));
+
+                    writeBMBCSnapshot(
+                        bmbc,
+                        completed_steps,
+                        checkpoint_output_path);
+                }
             }
         }
 
@@ -447,86 +511,37 @@ void runSimulation()
 
     std::printf("\n");
 
-    // Final Sxy validation profiles
-    for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
+    if constexpr (BMBC_ENABLED)
     {
-        checkCuda(cudaSetDevice(domains[gpu]->device_id));
+        checkCuda(cudaSetDevice(domains[0]->device_id));
         checkCuda(cudaDeviceSynchronize());
 
-        copyMacroscopicFieldsToHost(*current[gpu]);
-    }
-
-    const int z_profile = GLOBAL_NZ / 2;
-
-    const int x_profiles[] = {
-        0,
-        1,
-        2,
-        GLOBAL_NX / 2,
-        GLOBAL_NX - 3,
-        GLOBAL_NX - 2,
-        GLOBAL_NX - 1};
-
-    for (const int x_profile : x_profiles)
-    {
-        if (!writeSxyValidationProfile(
-                current,
-                x_profile,
-                z_profile,
-                completed_steps,
-                output_directory))
-        {
+        if (bmbc.total_samples != averages[0].samples)
             throw std::runtime_error(
-                "Failed to write Sxy validation profile");
-        }
+                "BMBC / TemporalAverages sample mismatch");
+
+        std::printf(
+            "BMBC | samples %zu | blocks %zu | partial %zu\n",
+            bmbc.total_samples,
+            bmbc.completed_blocks,
+            bmbc.samples_in_block);
+
+        exportBMBCProfilesCSV(
+            bmbc,
+            completed_steps,
+            output_directory);
+
+        freeBMBCProfiles(bmbc);
     }
 
-    for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
+    // Release temporal averages buffers.
+    if constexpr (STATS_ENABLED)
     {
-        checkCuda(cudaSetDevice(domains[gpu]->device_id));
-        checkCuda(cudaDeviceSynchronize());
-
-        dfloat values[NUM_AVERAGE_FIELDS];
-
-        copyTemporalAveragesProbe(averages[gpu], 3 * NX / 4, NY - 2, NZ / 2, values);
-
-        std::printf(
-            "GPU %d | samples %zu | "
-            "rho_avg %.8f | ux_avg %.8f | "
-            "uy_avg %.8f | uz_avg %.8f\n",
-            domains[gpu]->device_id,
-            averages[gpu].samples,
-            static_cast<double>(values[0]),
-            static_cast<double>(values[1]),
-            static_cast<double>(values[2]),
-            static_cast<double>(values[3]));
-
-        std::printf(
-            "GPU %d | samples %zu\n"
-            "  rho_avg = %.9e\n"
-            "  ux_avg  = %.9e\n"
-            "  uy_avg  = %.9e\n"
-            "  uz_avg  = %.9e\n"
-            "  Sxx_avg = %.9e\n"
-            "  Sxy_avg = %.9e\n"
-            "  Sxz_avg = %.9e\n"
-            "  Syy_avg = %.9e\n"
-            "  Syz_avg = %.9e\n"
-            "  Szz_avg = %.9e\n",
-            gpu,
-            averages[gpu].samples,
-            static_cast<double>(values[AVG_RHO]),
-            static_cast<double>(values[AVG_UX]),
-            static_cast<double>(values[AVG_UY]),
-            static_cast<double>(values[AVG_UZ]),
-            static_cast<double>(values[AVG_SXX]),
-            static_cast<double>(values[AVG_SXY]),
-            static_cast<double>(values[AVG_SXZ]),
-            static_cast<double>(values[AVG_SYY]),
-            static_cast<double>(values[AVG_SYZ]),
-            static_cast<double>(values[AVG_SZZ]));
-
-        freeTemporalAverages(averages[gpu]);
+        for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
+        {
+            checkCuda(cudaSetDevice(domains[gpu]->device_id));
+            freeTemporalAverages(averages[gpu]);
+        }
     }
 
     checkCuda(cudaSetDevice(domains.at(0)->device_id));

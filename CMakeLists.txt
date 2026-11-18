@@ -91,6 +91,24 @@ read_config(start_t_star STATISTICS_START_T_STAR)
 read_config(end_t_star STATISTICS_END_T_STAR)
 read_config(sample_interval STATISTICS_SAMPLE_INTERVAL)
 
+# BMBC configuration
+read_config(bmbc_enabled BMBC_ENABLED)
+
+if(BMBC_ENABLED)
+    set(BMBC_ENABLED 1)
+else()
+    set(BMBC_ENABLED 0)
+endif()
+read_config(bmbc_block_samples BMBC_BLOCK_SAMPLES)
+read_config(bmbc_initial_capacity_blocks BMBC_INITIAL_CAPACITY_BLOCKS)
+
+foreach(variable BMBC_BLOCK_SAMPLES BMBC_INITIAL_CAPACITY_BLOCKS)
+    if(NOT "${${variable}}" MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "${variable} must be a positive integer")
+    endif()
+endforeach()
+
+
 if(STATISTICS_ENABLED)
     set(STATISTICS_ENABLED 1)
 else()
@@ -144,6 +162,8 @@ set(GLBM_CORE_SOURCES
     src/multiGpu.cu
     src/nodeType.cu
     src/temporalAverages.cu
+    src/bmbc.cu
+    src/bmbcIO.cu
 )
 
 # These files include CUDA headers and device-side declarations.
@@ -152,8 +172,7 @@ set_source_files_properties(src/checkpoint.cpp src/output.cpp
 
 add_library(glbm_core OBJECT ${GLBM_CORE_SOURCES})
 add_library(glbm_output OBJECT 
-    src/output.cpp
-    src/strainRate.cu)
+    src/output.cpp)
 add_library(glbm_simulation OBJECT src/simulation.cu)
 add_executable(glbm
     src/main.cu
@@ -207,6 +226,9 @@ target_compile_definitions(glbm_simulation PRIVATE
     STATISTICS_SAMPLE_INTERVAL_VALUE=${STATISTICS_SAMPLE_INTERVAL}
     CHECKPOINT_PATH_VALUE=\"${CHECKPOINT_PATH}\"
     RESTART_PATH_VALUE=\"${RESTART_PATH}\"
+    BMBC_BLOCK_SAMPLES_VALUE=${BMBC_BLOCK_SAMPLES}
+    BMBC_INITIAL_CAPACITY_BLOCKS_VALUE=${BMBC_INITIAL_CAPACITY_BLOCKS}
+    BMBC_ENABLED_VALUE=${BMBC_ENABLED}
 )
 
 target_compile_definitions(glbm_output PRIVATE
