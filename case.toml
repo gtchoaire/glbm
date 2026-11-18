@@ -41,7 +41,7 @@ kinetic_energy_interval = 10000
 checkpoint_interval = 50
 checkpoint_path = "checkpoint_bmbc_test.glbm"
 # To resume, use e.g. "output/yyyymmdd_hhmm/checkpoint.glbm".
-restart_path = "output/20261118_1524/checkpoint_bmbc_test.glbm"
+restart_path = "output/"
 
 # output/20261015_1023/checkpoint.glbm
 
