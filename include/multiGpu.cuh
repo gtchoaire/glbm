@@ -11,9 +11,7 @@ bool validateMultiGpuTopology();
 SubDomainInfo makeSubDomainInfo(int subdomain_id);
 
 void allocateMomentHalos(DeviceDomain &domain);
-void beginMomentHaloExchange(DeviceDomain &back, DeviceDomain &front,
-                             const LBMState &back_state,
-                             const LBMState &front_state);
+void beginMomentHaloExchange(DeviceDomain &back, DeviceDomain &front, const LBMState &back_state, const LBMState &front_state);
 void completeMomentHaloExchange(DeviceDomain &back, DeviceDomain &front);
 void freeMomentHalos(DeviceDomain &domain);
 

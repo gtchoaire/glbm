@@ -14,6 +14,71 @@ constexpr size_t HALO_PLANE_VALUES = static_cast<size_t>(QF) * NX * NY;
 constexpr size_t HALO_PLANE_BYTES = HALO_PLANE_VALUES * sizeof(dfloat);
 constexpr unsigned int HALO_BLOCK_X = 32;
 constexpr unsigned int HALO_BLOCK_Y = 8;
+
+dim3 haloGrid()
+{
+    const dim3 block(HALO_BLOCK_X, HALO_BLOCK_Y);
+    return dim3((NX + block.x - 1) / block.x, (NY + block.y - 1) / block.y);
+}
+
+bool deviceSupportsMappedHostMemory(const int device_id)
+{
+    int supported = 0;
+    checkCuda(cudaDeviceGetAttribute(&supported, cudaDevAttrCanMapHostMemory, device_id));
+    return supported != 0;
+}
+
+void allocateHaloSendBuffer(dfloat **device_buffer, dfloat **host_buffer, const bool mapped)
+{
+    const unsigned int flags = mapped ? cudaHostAllocPortable | cudaHostAllocMapped : cudaHostAllocPortable;
+    checkCuda(cudaHostAlloc(reinterpret_cast<void **>(host_buffer), HALO_PLANE_BYTES, flags));
+    if (mapped)
+        checkCuda(cudaHostGetDevicePointer(reinterpret_cast<void **>(device_buffer), *host_buffer, 0));
+    else
+        checkCuda(cudaMalloc(reinterpret_cast<void **>(device_buffer), HALO_PLANE_BYTES));
+}
+
+void queueInteriorAfterPreviousBoundary(DeviceDomain &domain)
+{
+    checkCuda(cudaSetDevice(domain.device_id));
+    checkCuda(cudaStreamWaitEvent(domain.interior_stream, domain.boundary_complete, 0));
+}
+
+void queuePinnedBufferReuse(DeviceDomain &producer, const cudaEvent_t consumer_receive_complete)
+{
+    checkCuda(cudaSetDevice(producer.device_id));
+    checkCuda(cudaStreamWaitEvent(producer.stream, consumer_receive_complete, 0));
+}
+
+void queueFrontHaloSend(DeviceDomain &domain, const LBMState &state)
+{
+    const dim3 block(HALO_BLOCK_X, HALO_BLOCK_Y);
+    checkCuda(cudaSetDevice(domain.device_id));
+    gpuPackFrontInterfacePopulations<<<haloGrid(), block, 0, domain.stream>>>(state, NZ - 1, domain.population_halos.front_send);
+    checkCuda(cudaGetLastError());
+    if (!domain.population_halos.mapped_staging)
+        checkCuda(cudaMemcpyAsync(domain.population_halos.h_front_staging, domain.population_halos.front_send, HALO_PLANE_BYTES, cudaMemcpyDeviceToHost, domain.stream));
+    checkCuda(cudaEventRecord(domain.send_complete, domain.stream));
+}
+
+void queueBackHaloSend(DeviceDomain &domain, const LBMState &state)
+{
+    const dim3 block(HALO_BLOCK_X, HALO_BLOCK_Y);
+    checkCuda(cudaSetDevice(domain.device_id));
+    gpuPackBackInterfacePopulations<<<haloGrid(), block, 0, domain.stream>>>(state, 0, domain.population_halos.back_send);
+    checkCuda(cudaGetLastError());
+    if (!domain.population_halos.mapped_staging)
+        checkCuda(cudaMemcpyAsync(domain.population_halos.h_back_staging, domain.population_halos.back_send, HALO_PLANE_BYTES, cudaMemcpyDeviceToHost, domain.stream));
+    checkCuda(cudaEventRecord(domain.send_complete, domain.stream));
+}
+
+void queueHaloReceive(DeviceDomain &destination, const cudaEvent_t source_send_complete, const dfloat *host_staging, dfloat *device_halo)
+{
+    checkCuda(cudaSetDevice(destination.device_id));
+    checkCuda(cudaStreamWaitEvent(destination.stream, source_send_complete, 0));
+    checkCuda(cudaMemcpyAsync(device_halo, host_staging, HALO_PLANE_BYTES, cudaMemcpyHostToDevice, destination.stream));
+    checkCuda(cudaEventRecord(destination.receive_complete, destination.stream));
+}
 }
 
 SubDomainInfo makeSubDomainInfo(const int subdomain_id)
@@ -50,10 +115,9 @@ void allocateMomentHalos(DeviceDomain &domain)
 
     if constexpr (NUM_GPUS == 2)
     {
-        checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.back_send), HALO_PLANE_BYTES));
-        checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.front_send), HALO_PLANE_BYTES));
-        checkCuda(cudaMallocHost(reinterpret_cast<void **>(&domain.population_halos.h_back_staging), HALO_PLANE_BYTES));
-        checkCuda(cudaMallocHost(reinterpret_cast<void **>(&domain.population_halos.h_front_staging), HALO_PLANE_BYTES));
+        domain.population_halos.mapped_staging = deviceSupportsMappedHostMemory(domain.device_id);
+        allocateHaloSendBuffer(&domain.population_halos.back_send, &domain.population_halos.h_back_staging, domain.population_halos.mapped_staging);
+        allocateHaloSendBuffer(&domain.population_halos.front_send, &domain.population_halos.h_front_staging, domain.population_halos.mapped_staging);
         checkCuda(cudaStreamCreateWithFlags(&domain.stream, cudaStreamNonBlocking));
         checkCuda(cudaStreamCreateWithFlags(&domain.interior_stream, cudaStreamNonBlocking));
         checkCuda(cudaEventCreateWithFlags(&domain.interior_complete, cudaEventDisableTiming));
@@ -70,49 +134,22 @@ void allocateMomentHalos(DeviceDomain &domain)
     checkCuda(cudaMalloc(reinterpret_cast<void **>(&domain.population_halos.remote.initial_wall), Q * sizeof(dfloat)));
 }
 
-void beginMomentHaloExchange(
-    DeviceDomain &back, DeviceDomain &front,
-    const LBMState &back_state, const LBMState &front_state)
+void beginMomentHaloExchange(DeviceDomain &back, DeviceDomain &front, const LBMState &back_state, const LBMState &front_state)
 {
-    const dim3 block(HALO_BLOCK_X, HALO_BLOCK_Y);
-    const dim3 grid((NX + block.x - 1) / block.x, (NY + block.y - 1) / block.y);
-
-    // Each pinned buffer is produced by one device and consumed by the other.
-    // Wait only for the previous host-to-device copy, not for the boundary
-    // kernel queued after it on the same stream.
-    checkCuda(cudaSetDevice(back.device_id));
-    checkCuda(cudaEventSynchronize(back.receive_complete));
-    checkCuda(cudaSetDevice(front.device_id));
-    checkCuda(cudaEventSynchronize(front.receive_complete));
-
-    checkCuda(cudaSetDevice(back.device_id));
-    checkCuda(cudaStreamWaitEvent(back.interior_stream, back.boundary_complete, 0));
-    gpuPackFrontInterfacePopulations<<<grid, block, 0, back.stream>>>(back_state, NZ - 1, back.population_halos.front_send);
-    checkCuda(cudaGetLastError());
-    checkCuda(cudaMemcpyAsync(back.population_halos.h_front_staging, back.population_halos.front_send, HALO_PLANE_BYTES, cudaMemcpyDeviceToHost, back.stream));
-    checkCuda(cudaEventRecord(back.send_complete, back.stream));
-
-    checkCuda(cudaSetDevice(front.device_id));
-    checkCuda(cudaStreamWaitEvent(front.interior_stream, front.boundary_complete, 0));
-    gpuPackBackInterfacePopulations<<<grid, block, 0, front.stream>>>(front_state, 0, front.population_halos.back_send);
-    checkCuda(cudaGetLastError());
-    checkCuda(cudaMemcpyAsync(front.population_halos.h_back_staging,front.population_halos.back_send, HALO_PLANE_BYTES, cudaMemcpyDeviceToHost, front.stream));
-    checkCuda(cudaEventRecord(front.send_complete, front.stream));
+    // Cross-device stream dependencies keep pinned-buffer ownership on the
+    // GPUs and avoid four host-blocking waits per simulation step.
+    queuePinnedBufferReuse(back, front.receive_complete);
+    queuePinnedBufferReuse(front, back.receive_complete);
+    queueInteriorAfterPreviousBoundary(back);
+    queueInteriorAfterPreviousBoundary(front);
+    queueFrontHaloSend(back, back_state);
+    queueBackHaloSend(front, front_state);
 }
 
 void completeMomentHaloExchange(DeviceDomain &back, DeviceDomain &front)
 {
-    checkCuda(cudaSetDevice(back.device_id));
-    checkCuda(cudaEventSynchronize(back.send_complete));
-    checkCuda(cudaSetDevice(front.device_id));
-    checkCuda(cudaMemcpyAsync(front.population_halos.remote.back, back.population_halos.h_front_staging, HALO_PLANE_BYTES,cudaMemcpyHostToDevice, front.stream));
-    checkCuda(cudaEventRecord(front.receive_complete, front.stream));
-
-    checkCuda(cudaSetDevice(front.device_id));
-    checkCuda(cudaEventSynchronize(front.send_complete));
-    checkCuda(cudaSetDevice(back.device_id));
-    checkCuda(cudaMemcpyAsync(back.population_halos.remote.front, front.population_halos.h_back_staging, HALO_PLANE_BYTES, cudaMemcpyHostToDevice, back.stream));
-    checkCuda(cudaEventRecord(back.receive_complete, back.stream));
+    queueHaloReceive(front, back.send_complete, back.population_halos.h_front_staging, front.population_halos.remote.back);
+    queueHaloReceive(back, front.send_complete, front.population_halos.h_back_staging, back.population_halos.remote.front);
 }
 
 void freeMomentHalos(DeviceDomain &domain)
@@ -121,8 +158,11 @@ void freeMomentHalos(DeviceDomain &domain)
 
     if constexpr (NUM_GPUS == 2)
     {
-        cudaFree(domain.population_halos.back_send);
-        cudaFree(domain.population_halos.front_send);
+        if (!domain.population_halos.mapped_staging)
+        {
+            cudaFree(domain.population_halos.back_send);
+            cudaFree(domain.population_halos.front_send);
+        }
         cudaFree(domain.population_halos.remote.back);
         cudaFree(domain.population_halos.remote.front);
         cudaFreeHost(domain.population_halos.h_back_staging);

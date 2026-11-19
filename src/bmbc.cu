@@ -66,6 +66,53 @@ namespace
         batch_sum[p] += value;
     }
 
+    // For a two-way Z decomposition of an even-sized global domain, the
+    // two geometric-center planes belong to different devices. Each GPU
+    // accumulates HALF of the interpolated central profile. Adding both
+    // partial sums later recovers the full instantaneous-profile sum.
+    __global__ void gpuAccumulateBMBCLocalProfile(
+        const LBMState state, const int local_center_z, double *partial_sum)
+    {
+        const std::size_t p =
+            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+        if (p >= BMBC_PROFILE_POINTS)
+            return;
+
+        const int x0 = (GLOBAL_NX - 1) / 2;
+        const int x1 = GLOBAL_NX / 2;
+        const int y0 = (GLOBAL_NY - 1) / 2;
+        const int y1 = GLOBAL_NY / 2;
+        double contribution;
+
+        if (p < static_cast<std::size_t>(GLOBAL_NY))
+        {
+            const int y = static_cast<int>(p);
+            contribution = 0.25 * (
+                physicalVelocity(state, M_UX_INDEX, x0, y, local_center_z) +
+                physicalVelocity(state, M_UX_INDEX, x1, y, local_center_z));
+        }
+        else
+        {
+            const int x = static_cast<int>(p - GLOBAL_NY);
+            contribution = 0.25 * (
+                physicalVelocity(state, M_UY_INDEX, x, y0, local_center_z) +
+                physicalVelocity(state, M_UY_INDEX, x, y1, local_center_z));
+        }
+
+        partial_sum[p] += contribution;
+    }
+
+    __global__ void gpuMergeBMBCLocalProfiles(
+        double *global_sum, double *local_sum, const double *remote_sum)
+    {
+        const std::size_t p =
+            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+        if (p >= BMBC_PROFILE_POINTS)
+            return;
+        global_sum[p] += local_sum[p] + remote_sum[p];
+        local_sum[p] = 0.0;
+    }
+
     __global__ void gpuCompleteBMBCBlock(
         double *batch_sum, double *batch_means,
         const std::size_t completed_blocks, const double inverse_block_samples)
@@ -150,13 +197,163 @@ namespace
 
 } // namespace
 
+void allocateBMBCLocalProfileSum(BMBCLocalProfileSum &local)
+{
+    if constexpr (NUM_GPUS != 2)
+        throw std::runtime_error("Local BMBC partial sums require two GPUs");
+    if (local.d_sum)
+        throw std::runtime_error("BMBC local profile sum already allocated");
+
+    const std::size_t bytes = BMBC_PROFILE_POINTS * sizeof(double);
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&local.d_sum), bytes));
+    checkCuda(cudaMemset(local.d_sum, 0, bytes));
+}
+
+void accumulateBMBCLocalProfileSum(BMBCLocalProfileSum &local, const LBMState &state, const SubDomainInfo &info, const cudaStream_t stream)
+{
+    if (!local.d_sum)
+        throw std::runtime_error("BMBC local profile sum not allocated");
+    if constexpr (NUM_GPUS != 2)
+        throw std::runtime_error("Local BMBC partial sums require two GPUs");
+
+    const int lower_global_z = (GLOBAL_NZ - 1) / 2;
+    const int upper_global_z = GLOBAL_NZ / 2;
+    const int global_center_z = info.global_z_start == 0
+                                    ? lower_global_z : upper_global_z;
+    if (global_center_z < info.global_z_start ||
+        global_center_z > info.global_z_end)
+        throw std::runtime_error("BMBC geometric center not in subdomain");
+    const int local_center_z = global_center_z - info.global_z_start;
+
+    constexpr int threads = 256;
+    const unsigned int blocks = static_cast<unsigned int>(
+        (BMBC_PROFILE_POINTS + threads - 1) / threads);
+    gpuAccumulateBMBCLocalProfile<<<blocks, threads, 0, stream>>>(
+        state, local_center_z, local.d_sum);
+    checkCuda(cudaGetLastError());
+}
+
+void freeBMBCLocalProfileSum(BMBCLocalProfileSum &local)
+{
+    if (local.d_sum)
+        checkCuda(cudaFree(local.d_sum));
+    local = BMBCLocalProfileSum{};
+}
+
+static void ensureBMBCBlockCapacity(BMBCProfiles &monitor, cudaStream_t stream);
+
+void allocateBMBCMultiGPUExchange(BMBCMultiGPUExchange &exchange, const int owner_device, const int remote_device)
+{
+    if constexpr (NUM_GPUS != 2)
+        throw std::runtime_error("BMBC exchange requires two GPUs");
+    if (exchange.h_remote || exchange.d_remote || exchange.remote_ready || exchange.remote_consumed)
+        throw std::runtime_error("BMBC exchange already allocated");
+
+    const std::size_t bytes = BMBC_PROFILE_POINTS * sizeof(double);
+    exchange.owner_device = owner_device;
+    exchange.remote_device = remote_device;
+
+    checkCuda(cudaSetDevice(owner_device));
+    checkCuda(cudaHostAlloc(reinterpret_cast<void **>(&exchange.h_remote), bytes, cudaHostAllocPortable));
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&exchange.d_remote), bytes));
+    checkCuda(cudaEventCreateWithFlags(&exchange.remote_consumed, cudaEventDisableTiming));
+    checkCuda(cudaEventRecord(exchange.remote_consumed));
+
+    checkCuda(cudaSetDevice(remote_device));
+    checkCuda(cudaEventCreateWithFlags(&exchange.remote_ready, cudaEventDisableTiming));
+
+    checkCuda(cudaSetDevice(owner_device));
+    exchange.pending_samples = 0;
+}
+
+void flushBMBCMultiGPUProfiles(BMBCProfiles &monitor, BMBCLocalProfileSum &local0, BMBCLocalProfileSum &local1, BMBCMultiGPUExchange &exchange, const int device0, const int device1, const cudaStream_t stream0, const cudaStream_t stream1)
+{
+    if (exchange.pending_samples == 0)
+        return;
+    if (!monitor.d_batch_sum || !local0.d_sum || !local1.d_sum ||
+        !exchange.h_remote || !exchange.d_remote)
+        throw std::runtime_error("BMBC multi-GPU buffers not allocated");
+    if (device0 != exchange.owner_device || device1 != exchange.remote_device)
+        throw std::runtime_error("BMBC multi-GPU device mismatch");
+
+    constexpr int threads = 256;
+    const unsigned int blocks = static_cast<unsigned int>(
+        (BMBC_PROFILE_POINTS + threads - 1) / threads);
+    const std::size_t bytes = BMBC_PROFILE_POINTS * sizeof(double);
+
+    // GPU 1 produces the host staging buffer and GPU 0 consumes it. Events
+    // keep both dependencies asynchronous and prevent premature buffer reuse.
+    checkCuda(cudaSetDevice(device1));
+    checkCuda(cudaStreamWaitEvent(stream1, exchange.remote_consumed, 0));
+    checkCuda(cudaMemcpyAsync(exchange.h_remote, local1.d_sum, bytes, cudaMemcpyDeviceToHost, stream1));
+    checkCuda(cudaMemsetAsync(local1.d_sum, 0, bytes, stream1));
+    checkCuda(cudaEventRecord(exchange.remote_ready, stream1));
+
+    checkCuda(cudaSetDevice(device0));
+    checkCuda(cudaStreamWaitEvent(stream0, exchange.remote_ready, 0));
+    checkCuda(cudaMemcpyAsync(exchange.d_remote, exchange.h_remote, bytes, cudaMemcpyHostToDevice, stream0));
+    checkCuda(cudaEventRecord(exchange.remote_consumed, stream0));
+    gpuMergeBMBCLocalProfiles<<<blocks, threads, 0, stream0>>>(
+        monitor.d_batch_sum, local0.d_sum, exchange.d_remote);
+    checkCuda(cudaGetLastError());
+    exchange.pending_samples = 0;
+}
+
+void recordBMBCMultiGPUSample(BMBCProfiles &monitor, BMBCLocalProfileSum &local0, BMBCLocalProfileSum &local1, BMBCMultiGPUExchange &exchange, const int device0, const int device1, const cudaStream_t stream0, const cudaStream_t stream1)
+{
+    if (!monitor.d_batch_means || !monitor.d_batch_sum)
+        throw std::runtime_error("BMBC monitor not allocated");
+
+    const bool complete = monitor.samples_in_block + 1 == monitor.block_samples;
+    ++monitor.samples_in_block;
+    ++monitor.total_samples;
+    ++exchange.pending_samples;
+    if (!complete)
+        return;
+
+    // Preserve the existing grow-on-demand behavior, on the owner GPU.
+    checkCuda(cudaSetDevice(device0));
+    flushBMBCMultiGPUProfiles(monitor, local0, local1, exchange, device0, device1, stream0, stream1);
+    // Complete the basic block in the same layout as single-GPU BMBC.
+    ensureBMBCBlockCapacity(monitor, stream0);
+    constexpr int threads = 256;
+    const unsigned int blocks = static_cast<unsigned int>(
+        (BMBC_PROFILE_POINTS + threads - 1) / threads);
+    gpuCompleteBMBCBlock<<<blocks, threads, 0, stream0>>>(
+        monitor.d_batch_sum, monitor.d_batch_means,
+        monitor.completed_blocks,
+        1.0 / static_cast<double>(monitor.block_samples));
+    checkCuda(cudaGetLastError());
+    ++monitor.completed_blocks;
+    monitor.samples_in_block = 0;
+}
+
+void freeBMBCMultiGPUExchange(BMBCMultiGPUExchange &exchange)
+{
+    if (exchange.remote_ready)
+    {
+        checkCuda(cudaSetDevice(exchange.remote_device));
+        checkCuda(cudaEventDestroy(exchange.remote_ready));
+    }
+    if (exchange.remote_consumed)
+    {
+        checkCuda(cudaSetDevice(exchange.owner_device));
+        checkCuda(cudaEventDestroy(exchange.remote_consumed));
+    }
+    if (exchange.d_remote)
+    {
+        checkCuda(cudaSetDevice(exchange.owner_device));
+        checkCuda(cudaFree(exchange.d_remote));
+    }
+    if (exchange.h_remote)
+        checkCuda(cudaFreeHost(exchange.h_remote));
+    exchange = BMBCMultiGPUExchange{};
+}
+
 void allocateBMBCProfiles(BMBCProfiles &monitor,
                           const std::size_t block_samples,
                           const std::size_t capacity_blocks)
 {
-    if constexpr (NUM_GPUS != 1)
-        throw std::runtime_error(
-            "BMBC centerline extraction currently supports one GPU only");
     if (monitor.d_batch_sum || monitor.d_batch_means || monitor.d_statistics)
         throw std::runtime_error("BMBC monitor already allocated");
     if (block_samples == 0 || capacity_blocks == 0)

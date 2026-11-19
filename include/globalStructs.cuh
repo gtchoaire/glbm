@@ -70,6 +70,7 @@ struct PopulationHaloBuffers
     dfloat *front_send = nullptr;
     dfloat *h_back_staging = nullptr;
     dfloat *h_front_staging = nullptr;
+    bool mapped_staging = false;
     RemotePopulationHalos remote;
 };
 

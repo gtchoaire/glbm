@@ -3,9 +3,9 @@ n_size = 64
 aspect_ratio = 1
 
 [simulation]
-num_gpus = 1
-steps = 110
-print_interval = 5
+num_gpus = 2
+steps = 10000
+print_interval = 1000
 precision = "float"
 
 [physics]
@@ -38,14 +38,14 @@ kinetic_energy = false
 kinetic_energy_interval = 10000
 
 [checkpoint]
-checkpoint_interval = 50
+checkpoint_interval = 1000
 checkpoint_path = "checkpoint_bmbc_test.glbm"
 # To resume, use e.g. "output/yyyymmdd_hhmm/checkpoint.glbm".
-restart_path = "output/"
+restart_path = ""
 
 # output/20261015_1023/checkpoint.glbm
 
 [bmbc]
 bmbc_enabled = true
-bmbc_block_samples = 2
-bmbc_initial_capacity_blocks = 4
+bmbc_block_samples = 1024
+bmbc_initial_capacity_blocks = 64

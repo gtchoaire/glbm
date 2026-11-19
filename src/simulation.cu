@@ -240,18 +240,15 @@ void runSimulation()
         }
     }
 
-    // Temporary BMBC integration test.
-    // Disable after validating the implementation.
     // BMBC statistical uncertainty monitoring.
     constexpr bool BMBC_ENABLED = BMBC_ENABLED_VALUE != 0;
 
     BMBCProfiles bmbc;
+    BMBCLocalProfileSum bmbc_local[2];
+    BMBCMultiGPUExchange bmbc_exchange;
 
     if constexpr (BMBC_ENABLED)
     {
-        if constexpr (NUM_GPUS != 1)
-            throw std::runtime_error(
-                "BMBC integration test currently requires one GPU");
 
         if constexpr (!STATS_ENABLED)
             throw std::runtime_error(
@@ -260,6 +257,16 @@ void runSimulation()
         checkCuda(cudaSetDevice(domains[0]->device_id));
 
         allocateBMBCProfiles(bmbc, static_cast<std::size_t>(BMBC_BLOCK_SAMPLES_VALUE), static_cast<std::size_t>(BMBC_INITIAL_CAPACITY_BLOCKS_VALUE));
+        if constexpr (NUM_GPUS == 2)
+        {
+            allocateBMBCMultiGPUExchange(bmbc_exchange, domains[0]->device_id, domains[1]->device_id);
+            for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
+            {
+                checkCuda(cudaSetDevice(domains[gpu]->device_id));
+                allocateBMBCLocalProfileSum(bmbc_local[gpu]);
+            }
+            checkCuda(cudaSetDevice(domains[0]->device_id));
+        }
         if constexpr (RESTART_ENABLED)
         {
             restoreBMBCSnapshot(
@@ -375,10 +382,23 @@ void runSimulation()
                 }
                 if constexpr (BMBC_ENABLED)
                 {
-                    accumulateBMBCProfiles(
-                        bmbc,
-                        *current[0],
-                        nullptr);
+                    if constexpr (NUM_GPUS == 2)
+                    {
+                        for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
+                        {
+                            DeviceDomain &domain = *domains[gpu];
+                            checkCuda(cudaSetDevice(domain.device_id));
+                            // domain.stream already waits for interior_complete
+                            // and contains the boundary work for this step.
+                            accumulateBMBCLocalProfileSum(bmbc_local[gpu], *current[gpu], domain.info, domain.stream);
+                        }
+                        recordBMBCMultiGPUSample(bmbc, bmbc_local[0], bmbc_local[1], bmbc_exchange, domains[0]->device_id, domains[1]->device_id, domains[0]->stream, domains[1]->stream);
+                    }
+                    else
+                    {
+                        checkCuda(cudaSetDevice(domains[0]->device_id));
+                        accumulateBMBCProfiles(bmbc, *current[0], nullptr);
+                    }
                 }
 
                 constexpr std::size_t BMBC_CHECK_EVERY_BLOCKS = 32;
@@ -394,7 +414,7 @@ void runSimulation()
                         reportBMBCProfiles(
                             bmbc,
                             completed_steps,
-                            nullptr);
+                            NUM_GPUS == 2 ? domains[0]->stream : nullptr);
                     }
                 }
             }
@@ -484,6 +504,8 @@ void runSimulation()
 
                 if constexpr (BMBC_ENABLED)
                 {
+                    if constexpr (NUM_GPUS == 2)
+                        flushBMBCMultiGPUProfiles(bmbc, bmbc_local[0], bmbc_local[1], bmbc_exchange, domains[0]->device_id, domains[1]->device_id, domains[0]->stream, domains[1]->stream);
                     checkCuda(cudaSetDevice(domains[0]->device_id));
 
                     writeBMBCSnapshot(
@@ -513,6 +535,8 @@ void runSimulation()
 
     if constexpr (BMBC_ENABLED)
     {
+        if constexpr (NUM_GPUS == 2)
+            flushBMBCMultiGPUProfiles(bmbc, bmbc_local[0], bmbc_local[1], bmbc_exchange, domains[0]->device_id, domains[1]->device_id, domains[0]->stream, domains[1]->stream);
         checkCuda(cudaSetDevice(domains[0]->device_id));
         checkCuda(cudaDeviceSynchronize());
 
@@ -532,6 +556,15 @@ void runSimulation()
             output_directory);
 
         freeBMBCProfiles(bmbc);
+        if constexpr (NUM_GPUS == 2)
+        {
+            freeBMBCMultiGPUExchange(bmbc_exchange);
+            for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
+            {
+                checkCuda(cudaSetDevice(domains[gpu]->device_id));
+                freeBMBCLocalProfileSum(bmbc_local[gpu]);
+            }
+        }
     }
 
     // Release temporal averages buffers.

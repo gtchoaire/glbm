@@ -35,6 +35,39 @@ struct BMBCProfiles
     std::size_t total_samples = 0;
 };
 
+// Per-device partial sum for the global geometric center plane.
+// Used only with NUM_GPUS == 2. Owns memory on its associated device.
+struct BMBCLocalProfileSum
+{
+    double *d_sum = nullptr;
+};
+
+// Stage 1 of dual-GPU BMBC: extraction only. No inter-device transfer yet.
+// Must be called with the owning CUDA device selected. The caller must
+// wait for the LBM state to be ready in the supplied stream.
+void allocateBMBCLocalProfileSum(BMBCLocalProfileSum &local);
+void accumulateBMBCLocalProfileSum(BMBCLocalProfileSum &local, const LBMState &state, const SubDomainInfo &info, cudaStream_t stream);
+void freeBMBCLocalProfileSum(BMBCLocalProfileSum &local);
+
+// Dual-GPU transfer staging. GPU 0 owns d_remote; h_remote is pinned host
+// memory. The partial block sums remain on their respective GPUs until
+// block completion or a checkpoint is requested.
+struct BMBCMultiGPUExchange
+{
+    double *h_remote = nullptr;
+    double *d_remote = nullptr;
+    cudaEvent_t remote_ready = nullptr;
+    cudaEvent_t remote_consumed = nullptr;
+    int owner_device = -1;
+    int remote_device = -1;
+    std::size_t pending_samples = 0;
+};
+
+void allocateBMBCMultiGPUExchange(BMBCMultiGPUExchange &exchange, int owner_device, int remote_device);
+void flushBMBCMultiGPUProfiles(BMBCProfiles &monitor, BMBCLocalProfileSum &local0, BMBCLocalProfileSum &local1, BMBCMultiGPUExchange &exchange, int device0, int device1, cudaStream_t stream0, cudaStream_t stream1);
+void recordBMBCMultiGPUSample(BMBCProfiles &monitor, BMBCLocalProfileSum &local0, BMBCLocalProfileSum &local1, BMBCMultiGPUExchange &exchange, int device0, int device1, cudaStream_t stream0, cudaStream_t stream1);
+void freeBMBCMultiGPUExchange(BMBCMultiGPUExchange &exchange);
+
 // Allocate in the currently selected CUDA device.
 void allocateBMBCProfiles(BMBCProfiles &monitor,
                           std::size_t block_samples,
