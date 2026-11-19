@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Extract actual time-averaged profiles from a GLBM v3 checkpoint.
+"""Extract actual time-averaged profiles from a GLBM v3/v4 checkpoint.
 
-The v3 payload stores 10 LBM moments per node (node-major), followed by
-10 statistical means in field-major, global z/y/x (x-fastest) order.
+The payload stores 10 LBM moments per node (node-major), followed by 10
+statistical means in field-major, global z/y/x (x-fastest) order. Version 4
+stores statistics in float64 independently of solver precision.
 
 Example:
     python3 extract_glbm_mean_profiles.py build/output/DATE/checkpoint_stats_128.glbm
@@ -39,8 +40,9 @@ def read_header(path: Path) -> tuple[dict[str, str], int]:
 
 def get_means(path: Path):
     header, payload_offset = read_header(path)
-    if header.get("GLBM_CHECKPOINT") != "3":
-        raise ValueError("This script requires GLBM_CHECKPOINT 3")
+    version = int(header.get("GLBM_CHECKPOINT", "0"))
+    if version not in (3, 4):
+        raise ValueError("This script requires GLBM_CHECKPOINT 3 or 4")
     if header.get("statistics") != "1":
         raise ValueError("Checkpoint contains no time-averaged fields (statistics 0)")
     if int(header["stats_fields"]) != len(FIELDS):
@@ -57,7 +59,10 @@ def get_means(path: Path):
 
     num_nodes = nx * ny * nz
     means_offset = payload_offset + num_nodes * num_moments * dtype.itemsize
-    expected_size = means_offset + num_nodes * len(FIELDS) * dtype.itemsize
+    stats_dtype = (
+        np.dtype("<f8") if header.get("stats_precision") == "float64" else dtype
+    )
+    expected_size = means_offset + num_nodes * len(FIELDS) * stats_dtype.itemsize
     actual_size = path.stat().st_size
     if actual_size != expected_size:
         raise ValueError(
@@ -66,7 +71,7 @@ def get_means(path: Path):
         )
     # Memory mapping avoids loading the entire 128^3 / 256^3 dataset into RAM.
     means = np.memmap(
-        path, mode="r", dtype=dtype, offset=means_offset,
+        path, mode="r", dtype=stats_dtype, offset=means_offset,
         shape=(len(FIELDS), nz, ny, nx), order="C"
     )
     return header, means, (nx, ny, nz)
@@ -74,7 +79,7 @@ def get_means(path: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("checkpoint", type=Path, help="GLBM checkpoint v3 with statistics")
+    parser.add_argument("checkpoint", type=Path, help="GLBM checkpoint v3/v4 with statistics")
     parser.add_argument("--out", type=Path, default=Path("post/mean_profiles"),
                         help="Directory for CSV outputs")
     parser.add_argument("--save-fields", action="store_true",

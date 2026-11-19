@@ -28,6 +28,7 @@ void restoreBMBCSnapshot(
 void exportBMBCProfilesCSV(
     BMBCProfiles &monitor,
     std::size_t completed_step,
+    std::size_t sample_interval,
     const std::filesystem::path &output_directory);
 
 #endif

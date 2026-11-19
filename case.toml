@@ -3,7 +3,7 @@ n_size = 64
 aspect_ratio = 1
 
 [simulation]
-num_gpus = 2
+num_gpus = 1
 steps = 10000
 print_interval = 1000
 precision = "float"
@@ -49,3 +49,5 @@ restart_path = ""
 bmbc_enabled = true
 bmbc_block_samples = 1024
 bmbc_initial_capacity_blocks = 64
+bmbc_report_interval_blocks = 32
+bmbc_export_interval_blocks = 0

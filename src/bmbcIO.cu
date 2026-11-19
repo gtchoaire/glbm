@@ -219,6 +219,7 @@ void restoreBMBCSnapshot(
 void exportBMBCProfilesCSV(
     BMBCProfiles &monitor,
     const std::size_t completed_step,
+    const std::size_t sample_interval,
     const std::filesystem::path &output_directory)
 {
     require(monitor.d_batch_means && monitor.d_statistics,
@@ -230,7 +231,7 @@ void exportBMBCProfilesCSV(
     std::ofstream out(filename);
     require(static_cast<bool>(out), "cannot open " + filename.string());
 
-    out << "step,group_size,M,K,profile,index,position_star,mean,mean_over_U,"
+    out << "step,reynolds_number,aspect_ratio,u_max,sample_interval,group_size,M,M_steps,M_t_star,K,profile,index,position_star,mean,mean_over_U,"
            "S0,S1,S1_over_S0,variance,standard_error,standard_error_over_U\n";
     out << std::setprecision(17);
 
@@ -265,9 +266,16 @@ void exportBMBCProfilesCSV(
                 ? std::sqrt(variance)
                 : std::numeric_limits<double>::quiet_NaN();
             const double u_lid = static_cast<double>(U_MAX);
+            const std::size_t M = group_size * monitor.block_samples;
+            const std::size_t M_steps = M * sample_interval;
+            const double M_t_star =
+                static_cast<double>(M_steps) * u_lid /
+                static_cast<double>(GLOBAL_NX - 1);
 
-            out << completed_step << ',' << group_size << ','
-                << group_size * monitor.block_samples << ',' << K << ','
+            out << completed_step << ',' << static_cast<double>(RE) << ','
+                << static_cast<double>(SAR) << ',' << u_lid << ','
+                << sample_interval << ',' << group_size << ','
+                << M << ',' << M_steps << ',' << M_t_star << ',' << K << ','
                 << (ux_profile ? "ux_y" : "uy_x") << ',' << index << ','
                 << position << ',' << mean << ',' << mean / u_lid << ','
                 << s0 << ',' << s1 << ',' << ratio << ',' << variance << ','

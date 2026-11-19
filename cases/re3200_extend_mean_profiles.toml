@@ -1,0 +1,49 @@
+[domain]
+n_size = 128
+aspect_ratio = 1
+
+[simulation]
+num_gpus = 1
+steps = 3571875
+print_interval = 10000
+precision = "float"
+
+[physics]
+reynolds_number = 3200.0
+u_max = 0.0256
+
+[lattice]
+stencil = "D3Q27"
+reconstruction_order = 2
+
+[statistics]
+enabled = true
+start_t_star = 120.0
+end_t_star = 720.0
+sample_interval = 1
+
+[cuda]
+block_x = 64
+block_y = 1
+block_z = 8
+
+[output]
+vti = false
+interval = 3571875
+binary = false
+binary_interval = 3571875
+kinetic_energy = true
+kinetic_energy_interval = 50000
+
+[checkpoint]
+checkpoint_interval = 250000
+checkpoint_path = "checkpoint_re3200_mean_profiles.glbm"
+# Supply the completed 220 t* checkpoint here or through the CMake override.
+restart_path = ""
+
+[bmbc]
+bmbc_enabled = true
+bmbc_block_samples = 1024
+bmbc_initial_capacity_blocks = 4096
+bmbc_report_interval_blocks = 256
+bmbc_export_interval_blocks = 512

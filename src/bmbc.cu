@@ -174,14 +174,19 @@ namespace
 
         for (std::size_t k = 0; k < K; ++k)
         {
-            const double centered = groupedMean(k) - mean;
+            const double value = groupedMean(k);
+            const double centered = value - mean;
 
             s0 += centered * centered;
 
+            // Russo & Luchini's finite-sample BMBC correction is
+            // sum(X_k X_{k+1} - mean^2), not the usual centered lag-one
+            // covariance.  Those expressions differ by an endpoint term
+            // for a finite series.
             if (k > 0)
-                s1 += previous * centered;
+                s1 += previous * value - mean * mean;
 
-            previous = centered;
+            previous = value;
         }
 
         const double n = static_cast<double>(K);

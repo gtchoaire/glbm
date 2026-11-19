@@ -19,7 +19,7 @@
 
 namespace
 {
-constexpr int CHECKPOINT_VERSION = 3;
+constexpr int CHECKPOINT_VERSION = 4;
 constexpr int MIN_SUPPORTED_CHECKPOINT_VERSION = 1;
 
 constexpr const char *precisionName()
@@ -116,6 +116,7 @@ void writeCheckpoint(
 
     if (write_statistics)
         output << "stats_fields " << NUM_AVERAGE_FIELDS << '\n'
+               << "stats_precision float64\n"
                << "stats_start_step " << statistics->start_step << '\n'
                << "stats_end_step " << statistics->end_step << '\n'
                << "stats_sample_interval " << statistics->sample_interval << '\n'
@@ -147,7 +148,7 @@ void writeCheckpoint(
                         {
                             const size_t index =
                                 static_cast<size_t>(field) * NUMBER_LBM_NODES + scalarIndex(x, y, z);
-                            const dfloat value = local_means[index];
+                            const double value = local_means[index];
                             output.write(reinterpret_cast<const char *>(&value), sizeof(value));
                         }
     }
@@ -243,6 +244,12 @@ size_t loadCheckpoint(
             int fields = 0;
             parseLine(readLine(input), "stats_fields", fields);
             require(fields == NUM_AVERAGE_FIELDS, "statistics field count does not match this build");
+            if (version >= 4)
+            {
+                std::string statistics_precision;
+                parseLine(readLine(input), "stats_precision", statistics_precision);
+                require(statistics_precision == "float64", "unsupported statistics precision");
+            }
             parseLine(readLine(input), "stats_start_step", loaded_statistics.start_step);
             parseLine(readLine(input), "stats_end_step", loaded_statistics.end_step);
             parseLine(readLine(input), "stats_sample_interval", loaded_statistics.sample_interval);
@@ -291,7 +298,16 @@ size_t loadCheckpoint(
                         {
                             const size_t index =
                                 static_cast<size_t>(field) * NUMBER_LBM_NODES + scalarIndex(x, y, z);
-                            input.read(reinterpret_cast<char *>(&local_means[index]), sizeof(dfloat));
+                            if (version >= 4 || sizeof(dfloat) == sizeof(double))
+                            {
+                                input.read(reinterpret_cast<char *>(&local_means[index]), sizeof(double));
+                            }
+                            else
+                            {
+                                float legacy_value = 0.0f;
+                                input.read(reinterpret_cast<char *>(&legacy_value), sizeof(legacy_value));
+                                local_means[index] = static_cast<double>(legacy_value);
+                            }
                             require(static_cast<bool>(input), "truncated statistics data");
                         }
     }

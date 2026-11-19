@@ -34,6 +34,16 @@ namespace
             return completed_steps % Interval == 0 || completed_steps == static_cast<size_t>(N_STEPS);
         }
     }
+
+    template <size_t Interval>
+    constexpr bool blockIntervalDue(const size_t completed_blocks)
+    {
+        if constexpr (Interval == 0)
+            return false;
+        else
+            return completed_blocks >= Interval &&
+                   completed_blocks % Interval == 0;
+    }
 }
 
 constexpr double calculateMlups(const size_t nodes, const size_t steps, const double seconds)
@@ -172,12 +182,19 @@ void runSimulation()
 
         if (restored_stats.present)
         {
+            const bool extending_window =
+                stats_end_step > restored_stats.end_step;
+            const bool extension_has_gap =
+                extending_window && completed_steps > restored_stats.end_step;
             if (restored_stats.start_step != stats_start_step ||
-                restored_stats.end_step != stats_end_step ||
-                restored_stats.sample_interval != STATS_SAMPLE_INTERVAL)
+                restored_stats.sample_interval != STATS_SAMPLE_INTERVAL ||
+                stats_end_step < restored_stats.end_step ||
+                extension_has_gap)
             {
                 throw std::runtime_error(
-                    "Checkpoint statistics window does not match case.toml.");
+                    "Checkpoint statistics window is incompatible with case.toml. "
+                    "The end may only be extended when restarting at or before "
+                    "the previous statistics end.");
             }
 
             if (restored_stats.samples != expected_samples)
@@ -401,13 +418,23 @@ void runSimulation()
                     }
                 }
 
-                constexpr std::size_t BMBC_CHECK_EVERY_BLOCKS = 32;
+                constexpr std::size_t BMBC_REPORT_INTERVAL_BLOCKS =
+                    BMBC_REPORT_INTERVAL_BLOCKS_VALUE;
+                constexpr std::size_t BMBC_EXPORT_INTERVAL_BLOCKS =
+                    BMBC_EXPORT_INTERVAL_BLOCKS_VALUE;
 
                 if constexpr (BMBC_ENABLED)
                 {
-                    if (bmbc.samples_in_block == 0 &&
-                        bmbc.completed_blocks >= BMBC_CHECK_EVERY_BLOCKS &&
-                        bmbc.completed_blocks % BMBC_CHECK_EVERY_BLOCKS == 0)
+                    const bool completed_basic_block =
+                        bmbc.samples_in_block == 0;
+                    const bool report_due =
+                        blockIntervalDue<BMBC_REPORT_INTERVAL_BLOCKS>(
+                            bmbc.completed_blocks);
+                    const bool export_due =
+                        blockIntervalDue<BMBC_EXPORT_INTERVAL_BLOCKS>(
+                            bmbc.completed_blocks);
+
+                    if (completed_basic_block && report_due)
                     {
                         checkCuda(cudaSetDevice(domains[0]->device_id));
 
@@ -415,6 +442,19 @@ void runSimulation()
                             bmbc,
                             completed_steps,
                             NUM_GPUS == 2 ? domains[0]->stream : nullptr);
+                    }
+
+                    // The experimental comparison remains offline. Periodic
+                    // CSVs only make the accumulated profiles available at a
+                    // coarse cadence, avoiding per-step I/O or L2 work.
+                    if (completed_basic_block && export_due)
+                    {
+                        checkCuda(cudaSetDevice(domains[0]->device_id));
+                        exportBMBCProfilesCSV(
+                            bmbc,
+                            completed_steps,
+                            STATS_SAMPLE_INTERVAL,
+                            output_directory);
                     }
                 }
             }
@@ -553,6 +593,7 @@ void runSimulation()
         exportBMBCProfilesCSV(
             bmbc,
             completed_steps,
+            STATS_SAMPLE_INTERVAL,
             output_directory);
 
         freeBMBCProfiles(bmbc);

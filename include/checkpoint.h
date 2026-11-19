@@ -18,7 +18,7 @@ struct CheckpointStatistics
     size_t end_step = 0;
     size_t sample_interval = 1;
     size_t samples = 0;
-    std::vector<std::vector<dfloat>> means;
+    std::vector<std::vector<double>> means;
 };
 
 void writeCheckpoint(

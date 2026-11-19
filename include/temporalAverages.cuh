@@ -24,13 +24,15 @@ enum AverageField
 
 struct TemporalAverages
 {
-    dfloat *d_means = nullptr;
+    // Long recurrent averages stagnate in float once 1/n approaches machine
+    // precision. Keep statistics in double independently of solver precision.
+    double *d_means = nullptr;
     size_t samples = 0;
 };
 
 void copyTemporalAveragesToHost(
     const TemporalAverages &averages,
-    std::vector<dfloat> &host_means);
+    std::vector<double> &host_means);
 
 void allocateTemporalAverages(TemporalAverages &averages);
 
@@ -44,13 +46,13 @@ void accumulateTemporalAverages(
 void copyTemporalAveragesProbe(
     const TemporalAverages &averages,
     int x, int y, int z,
-    dfloat *values);
+    double *values);
 
 void freeTemporalAverages(TemporalAverages &averages);
 
 void restoreTemporalAveragesFromHost(
     TemporalAverages &averages,
-    const std::vector<dfloat> &host_means,
+    const std::vector<double> &host_means,
     size_t samples);
 
 #endif

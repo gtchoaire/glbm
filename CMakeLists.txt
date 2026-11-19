@@ -101,10 +101,18 @@ else()
 endif()
 read_config(bmbc_block_samples BMBC_BLOCK_SAMPLES)
 read_config(bmbc_initial_capacity_blocks BMBC_INITIAL_CAPACITY_BLOCKS)
+read_config(bmbc_report_interval_blocks BMBC_REPORT_INTERVAL_BLOCKS)
+read_config(bmbc_export_interval_blocks BMBC_EXPORT_INTERVAL_BLOCKS)
 
 foreach(variable BMBC_BLOCK_SAMPLES BMBC_INITIAL_CAPACITY_BLOCKS)
     if(NOT "${${variable}}" MATCHES "^[1-9][0-9]*$")
         message(FATAL_ERROR "${variable} must be a positive integer")
+    endif()
+endforeach()
+
+foreach(variable BMBC_REPORT_INTERVAL_BLOCKS BMBC_EXPORT_INTERVAL_BLOCKS)
+    if(NOT "${${variable}}" MATCHES "^[0-9]+$")
+        message(FATAL_ERROR "${variable} must be a non-negative integer")
     endif()
 endforeach()
 
@@ -228,6 +236,8 @@ target_compile_definitions(glbm_simulation PRIVATE
     RESTART_PATH_VALUE=\"${RESTART_PATH}\"
     BMBC_BLOCK_SAMPLES_VALUE=${BMBC_BLOCK_SAMPLES}
     BMBC_INITIAL_CAPACITY_BLOCKS_VALUE=${BMBC_INITIAL_CAPACITY_BLOCKS}
+    BMBC_REPORT_INTERVAL_BLOCKS_VALUE=${BMBC_REPORT_INTERVAL_BLOCKS}
+    BMBC_EXPORT_INTERVAL_BLOCKS_VALUE=${BMBC_EXPORT_INTERVAL_BLOCKS}
     BMBC_ENABLED_VALUE=${BMBC_ENABLED}
 )
 
@@ -239,3 +249,30 @@ target_compile_definitions(glbm_output PRIVATE
 )
 
 set_target_properties(glbm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(bmbc_statistics_test
+        tests/bmbc_statistics_test.cu
+        $<TARGET_OBJECTS:glbm_core>
+    )
+    target_include_directories(bmbc_statistics_test PRIVATE include)
+    target_compile_definitions(bmbc_statistics_test PRIVATE
+        NUM_GPUS=${NUM_GPUS}
+        N_SIZE=${N_SIZE}
+        SAR=${SAR}
+        RE_NUMBER=${RE_NUMBER}
+        U_MAX_VALUE=${U_MAX}
+        STENCIL=${STENCIL}
+        ORDER=${ORDER}
+        BLOCK_NX_VALUE=${BLOCK_X}
+        BLOCK_NY_VALUE=${BLOCK_Y}
+        BLOCK_NZ_VALUE=${BLOCK_Z}
+    )
+    if(PRECISION STREQUAL "double")
+        target_compile_definitions(bmbc_statistics_test PRIVATE double_precision)
+    endif()
+    set_target_properties(bmbc_statistics_test PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON)
+    add_test(NAME bmbc_statistics COMMAND bmbc_statistics_test)
+endif()

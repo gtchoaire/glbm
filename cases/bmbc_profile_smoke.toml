@@ -1,0 +1,48 @@
+[domain]
+n_size = 64
+aspect_ratio = 1
+
+[simulation]
+num_gpus = 1
+steps = 49219
+print_interval = 5000
+precision = "float"
+
+[physics]
+reynolds_number = 3200.0
+u_max = 0.0256
+
+[lattice]
+stencil = "D3Q27"
+reconstruction_order = 2
+
+[statistics]
+enabled = true
+start_t_star = 10.0
+end_t_star = 20.0
+sample_interval = 1
+
+[cuda]
+block_x = 64
+block_y = 1
+block_z = 8
+
+[output]
+vti = false
+interval = 49219
+binary = false
+binary_interval = 49219
+kinetic_energy = false
+kinetic_energy_interval = 49219
+
+[checkpoint]
+checkpoint_interval = 49219
+checkpoint_path = "checkpoint_bmbc_profile_smoke.glbm"
+restart_path = ""
+
+[bmbc]
+bmbc_enabled = true
+bmbc_block_samples = 256
+bmbc_initial_capacity_blocks = 64
+bmbc_report_interval_blocks = 32
+bmbc_export_interval_blocks = 0
