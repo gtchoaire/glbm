@@ -42,6 +42,8 @@ restart_path = ""
 
 [bmbc]
 bmbc_enabled = true
+bmbc_sample_interval = 1
+bmbc_turbulence_profiles = false
 bmbc_block_samples = 256
 bmbc_initial_capacity_blocks = 64
 bmbc_report_interval_blocks = 32

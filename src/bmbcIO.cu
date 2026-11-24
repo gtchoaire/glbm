@@ -16,7 +16,7 @@
 
 namespace
 {
-constexpr int BMBC_IO_VERSION = 1;
+constexpr int BMBC_IO_VERSION = BMBC_TURBULENCE_PROFILES ? 2 : 1;
 
 std::filesystem::path sidecarPath(const std::filesystem::path &glbm_path)
 {
@@ -83,6 +83,40 @@ void validateCounters(const std::size_t block_samples,
     require(completed * block_samples + partial == total,
             "inconsistent BMBC sample counters");
 }
+
+struct ProfilePoint
+{
+    const char *name;
+    std::size_t index;
+    std::size_t dimension;
+    int normalization_power;
+};
+
+ProfilePoint describeProfilePoint(const std::size_t p)
+{
+    if constexpr (!BMBC_TURBULENCE_PROFILES)
+    {
+        if (p < static_cast<std::size_t>(NY))
+            return {"ux_y", p, static_cast<std::size_t>(NY), 1};
+        return {"uy_x", p - NY, static_cast<std::size_t>(NX), 1};
+    }
+
+    if (p < BMBC_UY_Y_OFFSET)
+        return {"ux_y", p - BMBC_UX_Y_OFFSET, static_cast<std::size_t>(NY), 1};
+    if (p < BMBC_UX2_Y_OFFSET)
+        return {"uy_y", p - BMBC_UY_Y_OFFSET, static_cast<std::size_t>(NY), 1};
+    if (p < BMBC_UXUY_Y_OFFSET)
+        return {"ux2_y", p - BMBC_UX2_Y_OFFSET, static_cast<std::size_t>(NY), 2};
+    if (p < BMBC_UX_X_OFFSET)
+        return {"uxuy_y", p - BMBC_UXUY_Y_OFFSET, static_cast<std::size_t>(NY), 2};
+    if (p < BMBC_UY_X_TURB_OFFSET)
+        return {"ux_x", p - BMBC_UX_X_OFFSET, static_cast<std::size_t>(NX), 1};
+    if (p < BMBC_UY2_X_OFFSET)
+        return {"uy_x", p - BMBC_UY_X_TURB_OFFSET, static_cast<std::size_t>(NX), 1};
+    if (p < BMBC_UXUY_X_OFFSET)
+        return {"uy2_x", p - BMBC_UY2_X_OFFSET, static_cast<std::size_t>(NX), 2};
+    return {"uxuy_x", p - BMBC_UXUY_X_OFFSET, static_cast<std::size_t>(NX), 2};
+}
 } // namespace
 
 void writeBMBCSnapshot(
@@ -117,16 +151,20 @@ void writeBMBCSnapshot(
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     require(static_cast<bool>(out), "cannot open " + temporary.string());
 
+    // Store global dimensions so that a checkpoint can be resumed with a
+    // different supported domain decomposition (one or two GPUs).
     out << "GLBM_BMBC " << BMBC_IO_VERSION << '\n'
-        << "nx " << NX << '\n'
-        << "ny " << NY << '\n'
-        << "nz " << NZ << '\n'
+        << "nx " << GLOBAL_NX << '\n'
+        << "ny " << GLOBAL_NY << '\n'
+        << "nz " << GLOBAL_NZ << '\n'
         << "step " << completed_step << '\n'
         << "block_samples " << monitor.block_samples << '\n'
         << "completed_blocks " << monitor.completed_blocks << '\n'
         << "samples_in_block " << monitor.samples_in_block << '\n'
-        << "total_samples " << monitor.total_samples << '\n'
-        << "data\n";
+        << "total_samples " << monitor.total_samples << '\n';
+    if constexpr (BMBC_TURBULENCE_PROFILES)
+        out << "profile_points " << BMBC_PROFILE_POINTS << '\n';
+    out << "data\n";
     require(static_cast<bool>(out), "failed to write metadata");
     writeBytes(out, partial_sum);
     writeBytes(out, history);
@@ -157,6 +195,7 @@ void restoreBMBCSnapshot(
     int format_version = 0;
     std::size_t nx = 0, ny = 0, nz = 0;
     std::size_t step = 0, block_samples = 0, completed = 0, partial = 0, total = 0;
+    std::size_t profile_points = 0;
     readEntry(in, "GLBM_BMBC", format_version);
     readEntry(in, "nx", nx);
     readEntry(in, "ny", ny);
@@ -166,12 +205,24 @@ void restoreBMBCSnapshot(
     readEntry(in, "completed_blocks", completed);
     readEntry(in, "samples_in_block", partial);
     readEntry(in, "total_samples", total);
+    if (format_version >= 2)
+        readEntry(in, "profile_points", profile_points);
     std::string data_line;
     require(static_cast<bool>(std::getline(in, data_line)) && data_line == "data",
             "missing data marker");
 
     require(format_version == BMBC_IO_VERSION, "unsupported snapshot version");
-    require(nx == NX && ny == NY && nz == NZ, "domain mismatch");
+    if constexpr (BMBC_TURBULENCE_PROFILES)
+        require(profile_points == BMBC_PROFILE_POINTS,
+                "profile layout mismatch");
+    // Version 1 sidecars written by the original two-GPU implementation
+    // stored LOCAL_NZ. Accept that legacy metadata while new snapshots use
+    // the decomposition-independent global dimensions above.
+    const bool legacy_two_gpu_nz =
+        GLOBAL_NZ % 2 == 0 && nz == static_cast<std::size_t>(GLOBAL_NZ / 2);
+    require(nx == GLOBAL_NX && ny == GLOBAL_NY &&
+                (nz == GLOBAL_NZ || legacy_two_gpu_nz),
+            "domain mismatch");
     require(step == expected_step, "checkpoint step mismatch");
     require(block_samples == monitor.block_samples, "block_samples mismatch");
     require(total == expected_samples, "checkpoint statistics sample mismatch");
@@ -231,7 +282,7 @@ void exportBMBCProfilesCSV(
     std::ofstream out(filename);
     require(static_cast<bool>(out), "cannot open " + filename.string());
 
-    out << "step,reynolds_number,aspect_ratio,u_max,sample_interval,group_size,M,M_steps,M_t_star,K,profile,index,position_star,mean,mean_over_U,"
+    out << "step,reynolds_number,aspect_ratio,u_max,sample_interval,group_size,M,M_steps,M_t_star,K,profile,index,position_star,normalization_power,mean,mean_over_U,"
            "S0,S1,S1_over_S0,variance,standard_error,standard_error_over_U\n";
     out << std::setprecision(17);
 
@@ -248,12 +299,10 @@ void exportBMBCProfilesCSV(
 
         for (std::size_t p = 0; p < BMBC_PROFILE_POINTS; ++p)
         {
-            const bool ux_profile = p < static_cast<std::size_t>(NY);
-            const std::size_t index = ux_profile ? p : p - NY;
-            const std::size_t dimension = ux_profile ? NY : NX;
-            const double position = dimension > 1
-                ? -1.0 + 2.0 * static_cast<double>(index) /
-                             static_cast<double>(dimension - 1)
+            const ProfilePoint profile = describeProfilePoint(p);
+            const double position = profile.dimension > 1
+                ? -1.0 + 2.0 * static_cast<double>(profile.index) /
+                             static_cast<double>(profile.dimension - 1)
                 : 0.0;
 
             const double mean = stats[BMBC_STAT_MEAN * BMBC_PROFILE_POINTS + p];
@@ -266,6 +315,8 @@ void exportBMBCProfilesCSV(
                 ? std::sqrt(variance)
                 : std::numeric_limits<double>::quiet_NaN();
             const double u_lid = static_cast<double>(U_MAX);
+            const double normalization = profile.normalization_power == 2
+                ? u_lid * u_lid : u_lid;
             const std::size_t M = group_size * monitor.block_samples;
             const std::size_t M_steps = M * sample_interval;
             const double M_t_star =
@@ -276,10 +327,11 @@ void exportBMBCProfilesCSV(
                 << static_cast<double>(SAR) << ',' << u_lid << ','
                 << sample_interval << ',' << group_size << ','
                 << M << ',' << M_steps << ',' << M_t_star << ',' << K << ','
-                << (ux_profile ? "ux_y" : "uy_x") << ',' << index << ','
-                << position << ',' << mean << ',' << mean / u_lid << ','
+                << profile.name << ',' << profile.index << ','
+                << position << ',' << profile.normalization_power << ','
+                << mean << ',' << mean / normalization << ','
                 << s0 << ',' << s1 << ',' << ratio << ',' << variance << ','
-                << standard_error << ',' << standard_error / u_lid << '\n';
+                << standard_error << ',' << standard_error / normalization << '\n';
         }
 
         if (group_size > monitor.completed_blocks / 2)

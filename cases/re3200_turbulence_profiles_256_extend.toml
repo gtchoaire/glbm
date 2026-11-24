@@ -1,0 +1,52 @@
+# Extend the validated 256-cubed pilot from 100 to 600 t* of total sampling.
+
+[domain]
+n_size = 256
+aspect_ratio = 1
+
+[simulation]
+num_gpus = 2
+steps = 7171875
+print_interval = 10000
+precision = "float"
+
+[physics]
+reynolds_number = 3200.0
+u_max = 0.0256
+
+[lattice]
+stencil = "D3Q27"
+reconstruction_order = 2
+
+[statistics]
+enabled = false
+start_t_star = 120.0
+end_t_star = 720.0
+sample_interval = 16
+
+[cuda]
+block_x = 64
+block_y = 1
+block_z = 8
+
+[output]
+vti = false
+interval = 7171875
+binary = false
+binary_interval = 7171875
+kinetic_energy = true
+kinetic_energy_interval = 25000
+
+[checkpoint]
+checkpoint_interval = 250000
+checkpoint_path = "checkpoint_re3200_turbulence_256_pilot.glbm"
+restart_path = ""
+
+[bmbc]
+bmbc_enabled = true
+bmbc_sample_interval = 16
+bmbc_turbulence_profiles = true
+bmbc_block_samples = 128
+bmbc_initial_capacity_blocks = 4096
+bmbc_report_interval_blocks = 256
+bmbc_export_interval_blocks = 512

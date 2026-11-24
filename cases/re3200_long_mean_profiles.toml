@@ -44,6 +44,8 @@ restart_path = ""
 
 [bmbc]
 bmbc_enabled = true
+bmbc_sample_interval = 8
+bmbc_turbulence_profiles = false
 # 128 sampled states * 8 solver steps preserves the original 1024-step block.
 bmbc_block_samples = 128
 bmbc_initial_capacity_blocks = 4096

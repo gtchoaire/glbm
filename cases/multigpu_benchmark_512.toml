@@ -1,0 +1,53 @@
+# Solver-only strong-scaling benchmark: 17.18 billion lattice updates.
+# Statistics are disabled so a single 23 GiB GPU can hold this case.
+
+[domain]
+n_size = 512
+aspect_ratio = 1
+
+[simulation]
+num_gpus = 1
+steps = 128
+print_interval = 128
+precision = "float"
+
+[physics]
+reynolds_number = 3200.0
+u_max = 0.0256
+
+[lattice]
+stencil = "D3Q27"
+reconstruction_order = 2
+
+[statistics]
+enabled = false
+start_t_star = 0.0
+end_t_star = 1.0
+sample_interval = 1
+
+[cuda]
+block_x = 64
+block_y = 1
+block_z = 8
+
+[output]
+vti = false
+interval = 128
+binary = false
+binary_interval = 128
+kinetic_energy = false
+kinetic_energy_interval = 128
+
+[checkpoint]
+checkpoint_interval = 0
+checkpoint_path = "checkpoint_multigpu_benchmark.glbm"
+restart_path = ""
+
+[bmbc]
+bmbc_enabled = false
+bmbc_sample_interval = 1
+bmbc_turbulence_profiles = false
+bmbc_block_samples = 64
+bmbc_initial_capacity_blocks = 8
+bmbc_report_interval_blocks = 0
+bmbc_export_interval_blocks = 0

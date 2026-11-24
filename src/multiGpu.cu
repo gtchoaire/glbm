@@ -15,6 +15,12 @@ constexpr size_t HALO_PLANE_BYTES = HALO_PLANE_VALUES * sizeof(dfloat);
 constexpr unsigned int HALO_BLOCK_X = 32;
 constexpr unsigned int HALO_BLOCK_Y = 8;
 
+// On discrete GPUs, having the packing kernel write directly to mapped host
+// memory can be substantially slower than packing in device memory and using
+// the asynchronous copy engines.  Pinned host memory is still used as the
+// cross-device staging area because CUDA P2P is not universally available.
+constexpr bool USE_MAPPED_HOST_STAGING = false;
+
 dim3 haloGrid()
 {
     const dim3 block(HALO_BLOCK_X, HALO_BLOCK_Y);
@@ -115,7 +121,9 @@ void allocateMomentHalos(DeviceDomain &domain)
 
     if constexpr (NUM_GPUS == 2)
     {
-        domain.population_halos.mapped_staging = deviceSupportsMappedHostMemory(domain.device_id);
+        domain.population_halos.mapped_staging =
+            USE_MAPPED_HOST_STAGING &&
+            deviceSupportsMappedHostMemory(domain.device_id);
         allocateHaloSendBuffer(&domain.population_halos.back_send, &domain.population_halos.h_back_staging, domain.population_halos.mapped_staging);
         allocateHaloSendBuffer(&domain.population_halos.front_send, &domain.population_halos.h_front_staging, domain.population_halos.mapped_staging);
         checkCuda(cudaStreamCreateWithFlags(&domain.stream, cudaStreamNonBlocking));

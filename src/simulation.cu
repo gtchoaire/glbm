@@ -166,19 +166,24 @@ void runSimulation()
     const size_t stats_end_step =
         timeToStep(STATS_END_T_STAR);
 
+    const auto samplesThroughStep =
+        [stats_start_step, stats_end_step](
+            const size_t step, const size_t interval) -> size_t
+    {
+        if (step <= stats_start_step)
+            return 0;
+        const size_t last_step = std::min(step, stats_end_step);
+        return (last_step - stats_start_step) / interval;
+    };
+
+    constexpr bool BMBC_ENABLED = BMBC_ENABLED_VALUE != 0;
+    const size_t expected_bmbc_samples =
+        samplesThroughStep(completed_steps, BMBC_SAMPLE_INTERVAL);
+
     if constexpr (STATS_ENABLED)
     {
-        size_t expected_samples = 0;
-
-        if (completed_steps > stats_start_step)
-        {
-            const size_t last_step =
-                std::min(completed_steps, stats_end_step);
-
-            expected_samples =
-                (last_step - stats_start_step) /
-                STATS_SAMPLE_INTERVAL;
-        }
+        const size_t expected_samples =
+            samplesThroughStep(completed_steps, STATS_SAMPLE_INTERVAL);
 
         if (restored_stats.present)
         {
@@ -257,8 +262,8 @@ void runSimulation()
         }
     }
 
-    // BMBC statistical uncertainty monitoring.
-    constexpr bool BMBC_ENABLED = BMBC_ENABLED_VALUE != 0;
+    // BMBC statistical uncertainty monitoring. Profile sampling is independent
+    // from the much more expensive volumetric temporal averages.
 
     BMBCProfiles bmbc;
     BMBCLocalProfileSum bmbc_local[2];
@@ -266,11 +271,6 @@ void runSimulation()
 
     if constexpr (BMBC_ENABLED)
     {
-
-        if constexpr (!STATS_ENABLED)
-            throw std::runtime_error(
-                "BMBC requires temporal statistics enabled");
-
         checkCuda(cudaSetDevice(domains[0]->device_id));
 
         allocateBMBCProfiles(bmbc, static_cast<std::size_t>(BMBC_BLOCK_SAMPLES_VALUE), static_cast<std::size_t>(BMBC_INITIAL_CAPACITY_BLOCKS_VALUE));
@@ -289,7 +289,7 @@ void runSimulation()
             restoreBMBCSnapshot(
                 bmbc,
                 completed_steps,
-                averages[0].samples,
+                expected_bmbc_samples,
                 std::filesystem::path(RESTART_PATH));
         }
     }
@@ -362,19 +362,19 @@ void runSimulation()
 
         completed_steps = step + 1;
 
+        const bool inside_stats_window =
+            completed_steps > stats_start_step &&
+            completed_steps <= stats_end_step;
+
         if constexpr (STATS_ENABLED)
         {
-            const bool inside_stats_window =
-                completed_steps > stats_start_step &&
-                completed_steps <= stats_end_step;
-
-            const bool sample_due =
+            const bool volumetric_sample_due =
                 inside_stats_window &&
                 ((completed_steps - stats_start_step) %
                      STATS_SAMPLE_INTERVAL ==
                  0);
 
-            if (sample_due)
+            if (volumetric_sample_due)
             {
                 for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
                 {
@@ -397,25 +397,42 @@ void runSimulation()
                         block,
                         NUM_GPUS == 2 ? domain.stream : nullptr);
                 }
-                if constexpr (BMBC_ENABLED)
+            }
+        }
+
+        if constexpr (BMBC_ENABLED)
+        {
+            const bool profile_sample_due =
+                inside_stats_window &&
+                ((completed_steps - stats_start_step) %
+                     BMBC_SAMPLE_INTERVAL ==
+                 0);
+
+            if (profile_sample_due)
+            {
+                if constexpr (NUM_GPUS == 2)
                 {
-                    if constexpr (NUM_GPUS == 2)
+                    for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
                     {
-                        for (int gpu = 0; gpu < NUM_GPUS; ++gpu)
-                        {
-                            DeviceDomain &domain = *domains[gpu];
-                            checkCuda(cudaSetDevice(domain.device_id));
-                            // domain.stream already waits for interior_complete
-                            // and contains the boundary work for this step.
-                            accumulateBMBCLocalProfileSum(bmbc_local[gpu], *current[gpu], domain.info, domain.stream);
-                        }
-                        recordBMBCMultiGPUSample(bmbc, bmbc_local[0], bmbc_local[1], bmbc_exchange, domains[0]->device_id, domains[1]->device_id, domains[0]->stream, domains[1]->stream);
+                        DeviceDomain &domain = *domains[gpu];
+                        checkCuda(cudaSetDevice(domain.device_id));
+                        checkCuda(cudaStreamWaitEvent(
+                            domain.stream,
+                            domain.interior_complete,
+                            0));
+                        accumulateBMBCLocalProfileSum(
+                            bmbc_local[gpu], *current[gpu],
+                            domain.info, domain.stream);
                     }
-                    else
-                    {
-                        checkCuda(cudaSetDevice(domains[0]->device_id));
-                        accumulateBMBCProfiles(bmbc, *current[0], nullptr);
-                    }
+                    recordBMBCMultiGPUSample(
+                        bmbc, bmbc_local[0], bmbc_local[1], bmbc_exchange,
+                        domains[0]->device_id, domains[1]->device_id,
+                        domains[0]->stream, domains[1]->stream);
+                }
+                else
+                {
+                    checkCuda(cudaSetDevice(domains[0]->device_id));
+                    accumulateBMBCProfiles(bmbc, *current[0], nullptr);
                 }
 
                 constexpr std::size_t BMBC_REPORT_INTERVAL_BLOCKS =
@@ -423,39 +440,36 @@ void runSimulation()
                 constexpr std::size_t BMBC_EXPORT_INTERVAL_BLOCKS =
                     BMBC_EXPORT_INTERVAL_BLOCKS_VALUE;
 
-                if constexpr (BMBC_ENABLED)
+                const bool completed_basic_block =
+                    bmbc.samples_in_block == 0;
+                const bool report_due =
+                    blockIntervalDue<BMBC_REPORT_INTERVAL_BLOCKS>(
+                        bmbc.completed_blocks);
+                const bool export_due =
+                    blockIntervalDue<BMBC_EXPORT_INTERVAL_BLOCKS>(
+                        bmbc.completed_blocks);
+
+                if (completed_basic_block && report_due)
                 {
-                    const bool completed_basic_block =
-                        bmbc.samples_in_block == 0;
-                    const bool report_due =
-                        blockIntervalDue<BMBC_REPORT_INTERVAL_BLOCKS>(
-                            bmbc.completed_blocks);
-                    const bool export_due =
-                        blockIntervalDue<BMBC_EXPORT_INTERVAL_BLOCKS>(
-                            bmbc.completed_blocks);
+                    checkCuda(cudaSetDevice(domains[0]->device_id));
 
-                    if (completed_basic_block && report_due)
-                    {
-                        checkCuda(cudaSetDevice(domains[0]->device_id));
+                    reportBMBCProfiles(
+                        bmbc,
+                        completed_steps,
+                        NUM_GPUS == 2 ? domains[0]->stream : nullptr);
+                }
 
-                        reportBMBCProfiles(
-                            bmbc,
-                            completed_steps,
-                            NUM_GPUS == 2 ? domains[0]->stream : nullptr);
-                    }
-
-                    // The experimental comparison remains offline. Periodic
-                    // CSVs only make the accumulated profiles available at a
-                    // coarse cadence, avoiding per-step I/O or L2 work.
-                    if (completed_basic_block && export_due)
-                    {
-                        checkCuda(cudaSetDevice(domains[0]->device_id));
-                        exportBMBCProfilesCSV(
-                            bmbc,
-                            completed_steps,
-                            STATS_SAMPLE_INTERVAL,
-                            output_directory);
-                    }
+                // The experimental comparison remains offline. Periodic
+                // CSVs only make the accumulated profiles available at a
+                // coarse cadence, avoiding per-step I/O or L2 work.
+                if (completed_basic_block && export_due)
+                {
+                    checkCuda(cudaSetDevice(domains[0]->device_id));
+                    exportBMBCProfilesCSV(
+                        bmbc,
+                        completed_steps,
+                        BMBC_SAMPLE_INTERVAL,
+                        output_directory);
                 }
             }
         }
@@ -580,9 +594,11 @@ void runSimulation()
         checkCuda(cudaSetDevice(domains[0]->device_id));
         checkCuda(cudaDeviceSynchronize());
 
-        if (bmbc.total_samples != averages[0].samples)
+        const size_t expected_final_bmbc_samples =
+            samplesThroughStep(completed_steps, BMBC_SAMPLE_INTERVAL);
+        if (bmbc.total_samples != expected_final_bmbc_samples)
             throw std::runtime_error(
-                "BMBC / TemporalAverages sample mismatch");
+                "BMBC sample count mismatch");
 
         std::printf(
             "BMBC | samples %zu | blocks %zu | partial %zu\n",
@@ -593,7 +609,7 @@ void runSimulation()
         exportBMBCProfilesCSV(
             bmbc,
             completed_steps,
-            STATS_SAMPLE_INTERVAL,
+            BMBC_SAMPLE_INTERVAL,
             output_directory);
 
         freeBMBCProfiles(bmbc);

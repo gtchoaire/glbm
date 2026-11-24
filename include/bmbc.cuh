@@ -6,11 +6,35 @@
 #include <cuda_runtime.h>
 #include "globalStructs.cuh"
 
-// Profile 0: ux(y) at the geometric center (x,z).
-// Profile 1: uy(x) at the geometric center (y,z).
-// Stored contiguously in this order.
-constexpr std::size_t BMBC_PROFILE_POINTS =
-    static_cast<std::size_t>(NY) + static_cast<std::size_t>(NX);
+#ifndef BMBC_TURBULENCE_PROFILES_VALUE
+#define BMBC_TURBULENCE_PROFILES_VALUE 0
+#endif
+
+constexpr bool BMBC_TURBULENCE_PROFILES =
+    BMBC_TURBULENCE_PROFILES_VALUE != 0;
+
+// The validated legacy layout contains ux(y), followed by uy(x).  The optional
+// turbulence layout keeps those primary profiles and adds only the raw moments
+// needed for ux_rms(y), uy_rms(x), and <ux'uy'> on both centerlines.
+constexpr std::size_t BMBC_UX_Y_OFFSET = 0;
+constexpr std::size_t BMBC_UY_Y_OFFSET = static_cast<std::size_t>(NY);
+constexpr std::size_t BMBC_UX2_Y_OFFSET = 2 * static_cast<std::size_t>(NY);
+constexpr std::size_t BMBC_UXUY_Y_OFFSET = 3 * static_cast<std::size_t>(NY);
+constexpr std::size_t BMBC_UX_X_OFFSET = 4 * static_cast<std::size_t>(NY);
+constexpr std::size_t BMBC_UY_X_TURB_OFFSET =
+    BMBC_UX_X_OFFSET + static_cast<std::size_t>(NX);
+constexpr std::size_t BMBC_UY2_X_OFFSET =
+    BMBC_UX_X_OFFSET + 2 * static_cast<std::size_t>(NX);
+constexpr std::size_t BMBC_UXUY_X_OFFSET =
+    BMBC_UX_X_OFFSET + 3 * static_cast<std::size_t>(NX);
+
+constexpr std::size_t BMBC_UY_X_OFFSET = BMBC_TURBULENCE_PROFILES
+    ? BMBC_UY_X_TURB_OFFSET
+    : static_cast<std::size_t>(NY);
+
+constexpr std::size_t BMBC_PROFILE_POINTS = BMBC_TURBULENCE_PROFILES
+    ? 4 * (static_cast<std::size_t>(NY) + static_cast<std::size_t>(NX))
+    : static_cast<std::size_t>(NY) + static_cast<std::size_t>(NX);
 
 // Four statistics for each profile point, stored field-major.
 constexpr std::size_t BMBC_STAT_FIELDS = 4;

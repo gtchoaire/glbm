@@ -42,7 +42,9 @@ def load_profiles(path: Path):
         for row in reader:
             profile = row["profile"]
             if profile not in PROFILES:
-                raise ValueError(f"Unknown profile: {profile}")
+                # Optional turbulence-profile raw moments are analyzed by the
+                # dedicated second-moment post-processor.
+                continue
             m = int(row["M"])
             groups.setdefault((profile, m), []).append({
                 key: int(row[key]) if key in ("M", "K", "index")
@@ -216,8 +218,10 @@ def load_reference(reference_dir, profile, reynolds, aspect_ratio):
 
 
 def relative_l2(position, error, reference):
-    numerator = np.trapezoid(error * error, position)
-    denominator = np.trapezoid(reference * reference, position)
+    # np.trapz is available in both the NumPy 1.x installation commonly
+    # provided by Linux distributions and the NumPy 2.x project environment.
+    numerator = np.trapz(error * error, position)
+    denominator = np.trapz(reference * reference, position)
     return float(np.sqrt(numerator / denominator)) if denominator > 0 else float("nan")
 
 

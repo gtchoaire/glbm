@@ -26,6 +26,24 @@ namespace
                static_cast<double>(F_M_I_SCALE);
     }
 
+    __device__ __forceinline__ double yProfileMoment(
+        const int field, const double ux, const double uy)
+    {
+        if (field == 0) return ux;
+        if (field == 1) return uy;
+        if (field == 2) return ux * ux;
+        return ux * uy;
+    }
+
+    __device__ __forceinline__ double xProfileMoment(
+        const int field, const double ux, const double uy)
+    {
+        if (field == 0) return ux;
+        if (field == 1) return uy;
+        if (field == 2) return uy * uy;
+        return ux * uy;
+    }
+
     __global__ void gpuAccumulateBMBCProfiles(
         const LBMState state, double *batch_sum)
     {
@@ -42,24 +60,62 @@ namespace
         const int z0 = (NZ - 1) / 2;
         const int z1 = NZ / 2;
 
-        double value;
-        if (p < static_cast<std::size_t>(NY))
+        double value = 0.0;
+        if constexpr (BMBC_TURBULENCE_PROFILES)
         {
-            // ux(y) at x = (NX-1)/2, z = (NZ-1)/2.
-            const int y = static_cast<int>(p);
-            value = 0.25 * (physicalVelocity(state, M_UX_INDEX, x0, y, z0) +
-                            physicalVelocity(state, M_UX_INDEX, x1, y, z0) +
-                            physicalVelocity(state, M_UX_INDEX, x0, y, z1) +
-                            physicalVelocity(state, M_UX_INDEX, x1, y, z1));
+            const std::size_t y_values = 4 * static_cast<std::size_t>(NY);
+            if (p < y_values)
+            {
+                const int field = static_cast<int>(p / NY);
+                const int y = static_cast<int>(p % NY);
+                const int xs[2]{x0, x1};
+                const int zs[2]{z0, z1};
+                for (int iz = 0; iz < 2; ++iz)
+                    for (int ix = 0; ix < 2; ++ix)
+                    {
+                        const double ux = physicalVelocity(
+                            state, M_UX_INDEX, xs[ix], y, zs[iz]);
+                        const double uy = physicalVelocity(
+                            state, M_UY_INDEX, xs[ix], y, zs[iz]);
+                        value += 0.25 * yProfileMoment(field, ux, uy);
+                    }
+            }
+            else
+            {
+                const std::size_t local = p - y_values;
+                const int field = static_cast<int>(local / NX);
+                const int x = static_cast<int>(local % NX);
+                const int ys[2]{y0, y1};
+                const int zs[2]{z0, z1};
+                for (int iz = 0; iz < 2; ++iz)
+                    for (int iy = 0; iy < 2; ++iy)
+                    {
+                        const double ux = physicalVelocity(
+                            state, M_UX_INDEX, x, ys[iy], zs[iz]);
+                        const double uy = physicalVelocity(
+                            state, M_UY_INDEX, x, ys[iy], zs[iz]);
+                        value += 0.25 * xProfileMoment(field, ux, uy);
+                    }
+            }
         }
         else
         {
-            // uy(x) at y = (NY-1)/2, z = (NZ-1)/2.
-            const int x = static_cast<int>(p - NY);
-            value = 0.25 * (physicalVelocity(state, M_UY_INDEX, x, y0, z0) +
-                            physicalVelocity(state, M_UY_INDEX, x, y1, z0) +
-                            physicalVelocity(state, M_UY_INDEX, x, y0, z1) +
-                            physicalVelocity(state, M_UY_INDEX, x, y1, z1));
+            if (p < static_cast<std::size_t>(NY))
+            {
+                const int y = static_cast<int>(p);
+                value = 0.25 * (physicalVelocity(state, M_UX_INDEX, x0, y, z0) +
+                                physicalVelocity(state, M_UX_INDEX, x1, y, z0) +
+                                physicalVelocity(state, M_UX_INDEX, x0, y, z1) +
+                                physicalVelocity(state, M_UX_INDEX, x1, y, z1));
+            }
+            else
+            {
+                const int x = static_cast<int>(p - NY);
+                value = 0.25 * (physicalVelocity(state, M_UY_INDEX, x, y0, z0) +
+                                physicalVelocity(state, M_UY_INDEX, x, y1, z0) +
+                                physicalVelocity(state, M_UY_INDEX, x, y0, z1) +
+                                physicalVelocity(state, M_UY_INDEX, x, y1, z1));
+            }
         }
 
         // One thread writes each point; no atomics are needed.
@@ -82,21 +138,58 @@ namespace
         const int x1 = GLOBAL_NX / 2;
         const int y0 = (GLOBAL_NY - 1) / 2;
         const int y1 = GLOBAL_NY / 2;
-        double contribution;
+        double contribution = 0.0;
 
-        if (p < static_cast<std::size_t>(GLOBAL_NY))
+        if constexpr (BMBC_TURBULENCE_PROFILES)
         {
-            const int y = static_cast<int>(p);
-            contribution = 0.25 * (
-                physicalVelocity(state, M_UX_INDEX, x0, y, local_center_z) +
-                physicalVelocity(state, M_UX_INDEX, x1, y, local_center_z));
+            const std::size_t y_values =
+                4 * static_cast<std::size_t>(GLOBAL_NY);
+            if (p < y_values)
+            {
+                const int field = static_cast<int>(p / GLOBAL_NY);
+                const int y = static_cast<int>(p % GLOBAL_NY);
+                const int xs[2]{x0, x1};
+                for (int ix = 0; ix < 2; ++ix)
+                {
+                    const double ux = physicalVelocity(
+                        state, M_UX_INDEX, xs[ix], y, local_center_z);
+                    const double uy = physicalVelocity(
+                        state, M_UY_INDEX, xs[ix], y, local_center_z);
+                    contribution += 0.25 * yProfileMoment(field, ux, uy);
+                }
+            }
+            else
+            {
+                const std::size_t local = p - y_values;
+                const int field = static_cast<int>(local / GLOBAL_NX);
+                const int x = static_cast<int>(local % GLOBAL_NX);
+                const int ys[2]{y0, y1};
+                for (int iy = 0; iy < 2; ++iy)
+                {
+                    const double ux = physicalVelocity(
+                        state, M_UX_INDEX, x, ys[iy], local_center_z);
+                    const double uy = physicalVelocity(
+                        state, M_UY_INDEX, x, ys[iy], local_center_z);
+                    contribution += 0.25 * xProfileMoment(field, ux, uy);
+                }
+            }
         }
         else
         {
-            const int x = static_cast<int>(p - GLOBAL_NY);
-            contribution = 0.25 * (
-                physicalVelocity(state, M_UY_INDEX, x, y0, local_center_z) +
-                physicalVelocity(state, M_UY_INDEX, x, y1, local_center_z));
+            if (p < static_cast<std::size_t>(GLOBAL_NY))
+            {
+                const int y = static_cast<int>(p);
+                contribution = 0.25 * (
+                    physicalVelocity(state, M_UX_INDEX, x0, y, local_center_z) +
+                    physicalVelocity(state, M_UX_INDEX, x1, y, local_center_z));
+            }
+            else
+            {
+                const int x = static_cast<int>(p - GLOBAL_NY);
+                contribution = 0.25 * (
+                    physicalVelocity(state, M_UY_INDEX, x, y0, local_center_z) +
+                    physicalVelocity(state, M_UY_INDEX, x, y1, local_center_z));
+            }
         }
 
         partial_sum[p] += contribution;
@@ -586,8 +679,8 @@ void reportBMBCProfiles(
         monitor.completed_blocks,
         monitor.block_samples);
 
-    printPoint(NY - 2, "ux(y=NY-2)");
-    printPoint(NY + NX - 2, "uy(x=NX-2)");
+    printPoint(BMBC_UX_Y_OFFSET + NY - 2, "ux(y=NY-2)");
+    printPoint(BMBC_UY_X_OFFSET + NX - 2, "uy(x=NX-2)");
 }
 
 void freeBMBCProfiles(BMBCProfiles &monitor)

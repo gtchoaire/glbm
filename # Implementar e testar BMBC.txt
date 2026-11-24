@@ -1,0 +1,1092 @@
+# Implementar e testar BMBC
+
+> Fiz alguns testes em multi gpu mas não tenho o computador a disposição agora, então voltei para o notebook com apenas 1 gpu. Preciso que você termine a implementação do BMBC e faça o teste com perfis médios. Minha ideia é deixar rodar um transiente por mais de 100t^\* por exemplo, e a partir dali fazer médias dos 10 momentos, aquela média acumulativa e recorrente que já está implementada. Para conferir se a média já está suficientemente boa, minha ideia era utilizar a comparação do perfil de velocidades de ux ao longo de y em x=1/2 e z=1/2 e uy ao longo de x em y=1/2 e z=1/2, e fazer o erro l2 do numérico com a referência experimental que tenho para re = 3200 e re =10k. Esse seria um bom teste. Eu fui atrás da implementaçaõ de BMBC para realmente verificar se estou calculando de forma estatisticamente correta minhas amostras e as médias, se isso está condizente com a maneira correta de abordar o problema. Vou colocar no repositório os dados de prasad e kossef para comparações e você pode começar a fazer uma sequência de testes para as minhas ideias.
+
+<details><summary>82 previous messages</summary>
+
+> Vou primeiro mapear a implementação atual das médias, o estado do BMBC e os testes existentes. Em seguida fecho a implementação para 1 GPU e monto um teste reproduzível com perfis médios; os dados experimentais podem entrar como referência assim que aparecerem no repositório. Também vou separar claramente o que valida a estatística do que exige uma simulação longa de \(>100t^\*\).
+>
+> Os dados de Prasad–Koseff já aparecem no diretório de trabalho (ainda não versionados). A base do BMBC também existe, mas vou conferir agora três pontos críticos: fórmula do estimador, tratamento de blocos/restart e coerência entre o perfil monitorado e a média recorrente dos 10 momentos.
+>
+> <details><summary>Searched the web</summary>
+>
+> Searched the web for `BMBC batch means batch correlations variance estimator formula S0 S1 (n-1)(n-2) ...`
+>
+> Searched the web for `Russo Luchini 2017 fast algorithm estimation statistical error DNS time averages pdf ...`
+>
+> Searched the web for `"BMBC" "S1/S0" batch size ...`
+>
+> </details>
+>
+> Achei um erro estatístico concreto: o código calcula \(S_1\) como covariância centrada entre blocos adjacentes, mas a fórmula BMBC de Russo–Luchini usa \(\sum(\bar X_k\bar X_{k+1}-\hat\mu^2)\). As expressões diferem por um termo de borda em amostras finitas, justamente onde o estimador precisa ser correto. Vou corrigir isso e acrescentar testes que comparam a implementação à fórmula direta, além da comparação \(L_2\) com os CSV experimentais.
+>
+> Também vou manter dois diagnósticos separados: incerteza amostral (BMBC) e erro contra o experimento. Um erro experimental pequeno não prova convergência estatística, e um BMBC pequeno não elimina erro de malha/modelo.
+>
+> <details><summary>Created 7 files, edited 6 files, deleted a file</summary>
+>
+> - Wrote `./src/bmbc.cu` (+8 -3)
+> - Wrote `./src/bmbcIO.cu` (+3 -2)
+> - Deleted `./post/analyze_bmbc_profiles.py` (+0 -155)
+> - Wrote `./post/analyze_bmbc_profiles.py` (+346 -0)
+> - Wrote `./CMakeLists.txt` (+27 -0)
+> - Wrote `./tests/bmbc_statistics_test.cu` (+74 -0)
+> - Wrote `./tests/test_bmbc_analysis.py` (+50 -0)
+> - Wrote `./tests/bmbc_statistics_test.cu` (+1 -0)
+> - Wrote `./case.toml` (+1 -1)
+> - Wrote `./cases/bmbc_profile_smoke.toml` (+46 -0)
+> - Wrote `./cases/re10000_mean_profiles.toml` (+46 -0)
+> - Wrote `./cases/re3200_mean_profiles.toml` (+46 -0)
+> - Wrote `./docs/bmbc_validation.md` (+52 -0)
+> - Wrote `./post/analyze_bmbc_profiles.py` (+2 -2)
+>
+> </details>
+>
+> A correção e o pós-processamento já estão implementados. O teste Python confirma a orientação correta dos arquivos experimentais e o \(L_2\) ponderado nas coordenadas irregulares. Agora vou compilar um caso isolado de 1 GPU, executar o teste CUDA da fórmula BMBC e depois rodar o caso intermediário de perfis para validar o fluxo completo até os gráficos/erros.
+>
+> <details><summary>Created a file, edited a file</summary>
+>
+> - Wrote `./docs/bmbc_validation.md` (+3 -0)
+> - Wrote `./post/verify_bmbc_averages.py` (+90 -0)
+>
+> </details>
+>
+> O caso intermediário terminou em cerca de 12 s e validou o encadeamento completo. A média BMBC reconstruída com todos os blocos + bloco parcial bateu com a média recorrente dos 10 campos: erro máximo \(4{,}23\times10^{-7}\) em precisão simples (tolerância \(10^{-6}\)).
+>
+> Como esperado para apenas \(10t^\*\) de transiente e \(10t^\*\) de amostragem, ele ainda não está estatisticamente convergido: só 40,3% dos pontos de \(u_x(y)\) e 54,7% de \(u_y(x)\) ficaram com semilargura de 95% abaixo de \(0{,}01U\). Vou agora iniciar o caso útil Re=3200, com transiente de \(120t^\*\) e média por \(100t^\*\).
+>
+> O caso longo está estável e mais rápido que a estimativa inicial: cerca de 2,38 bilhões de atualizações/s, com previsão de ~16 min no total. A janela estatística começa no passo 595.313; até lá é somente transiente.
+>
+> O transiente chegou a \(30t^\*\) (passo 150 mil) sem erro numérico e mantendo ~2,37 GLUPS. Ainda não há amostras BMBC — isso é intencional para não contaminar a média com o desenvolvimento inicial.
+>
+> O transiente está em ~\(52t^\*\), 24% do caso. A queda suave para ~2,30 GLUPS vem das saídas periódicas de energia/checkpoint incluídas no tempo acumulado; a execução segue normal.
+>
+> Passo 310 mil (~\(62{,}5t^\*\)); sem sinais de instabilidade. Os checkpoints periódicos também estão sendo gravados, então uma interrupção não perderia todo o transiente.
+>
+> O transiente passou de \(74t^\*\) e segue consistente. Restam cerca de 4 minutos até o início da janela de amostragem em \(120t^\*\).
+>
+> Passo 420 mil (~\(84{,}7t^\*\)); execução normal. O custo medido ainda projeta término em cerca de 10,5 min.
+>
+> O transiente chegou a ~\(94{,}7t^\*\). Faltam aproximadamente \(25t^\*\) para começar a média; nenhum dado transitório foi acumulado nos 10 campos nem no BMBC.
+>
+> Passo 530 mil (~\(106{,}8t^\*\)); os \(120t^\*\) de descarte devem ser alcançados em ~1 minuto. Depois disso os relatórios BMBC surgirão a cada 32 blocos completos.
+>
+> O transiente está em \(116{,}9t^\*\); faltam cerca de 15 mil passos para a primeira amostra. A simulação continua estável.
+>
+> A janela estatística começou exatamente após o passo 595.313 (\(120t^\*\)). O custo por passo aumentou agora porque cada amostra atualiza os 10 campos médios e os dois perfis BMBC; isso é esperado.
+>
+> Primeiro diagnóstico, com apenas 32 blocos (~\(6{,}6t^\*\) amostrados), ainda mostra correlação/tendência forte: \(S_1/S_0=14{,}3\) no ponto próximo à tampa para \(u_x\). É cedo e não é critério de falha; o objetivo é observar a estabilização com o crescimento da janela e de \(M\).
+>
+> A janela acumulou ~\(13t^\*\) (passo 660 mil). Nenhum erro CUDA ou inconsistência entre contadores; o próximo diagnóstico vem em 64 blocos.
+>
+> Com 64 blocos (~\(13{,}2t^\*\)), o mesmo \(S_1/S_0\) de \(u_x\) caiu de 14,3 para 1,19 e o de \(u_y\) para 0,009. Essa sensibilidade confirma por que não se deve aceitar uma estimativa baseada nos primeiros poucos blocos.
+>
+> Com 96 blocos (~\(19{,}8t^\*\)), os dois pontos monitorados estão em \(S_1/S_0=1{,}34\) e 0,84. Ainda há correlação residual para \(M=1024\); o pós-processamento também avaliará \(M=2048,4096,\ldots\).
+>
+> Com 128 blocos (~\(26{,}4t^\*\)), \(u_y\) no ponto monitorado chegou perto do alvo BMBC (0,598); \(u_x\) próximo à tampa continua mais correlacionado (1,81). Isso reforça a seleção de \(M\) por perfil, não um único valor cego.
+>
+> Com ~\(33t^\*\) amostrados, \(u_y\) está praticamente no alvo (\(S_1/S_0=0{,}508\)) para \(M=1024\); \(u_x\) caiu para 1,13. Restam ~6,5 min.
+>
+> A média já cobre ~\(39t^\*\). Os contadores continuam coerentes e os checkpoints incluem tanto os 10 campos recorrentes quanto o sidecar BMBC para retomada exata.
+>
+> Com 192 blocos (~\(39{,}6t^\*\)), os pontos impressos estão em 0,90 e 0,80 para \(M=1024\). O resultado final usará o perfil inteiro e todos os tamanhos de agrupamento disponíveis, então esses dois pontos são apenas sentinelas.
+>
+> A janela chegou a ~\(49t^\*\), praticamente metade do planejado. A estimativa ainda oscila com o comprimento da série, especialmente em \(u_x\), portanto encerrar agora seria prematuro.
+>
+> Com 256 blocos (~\(52{,}8t^\*\)), a variância estimada de \(u_x\) no ponto sentinela caiu para \(1{,}07\times10^{-9}\), mas \(S_1/S_0\) ainda é 1,11. A execução deve terminar em ~5 min.
+>
+> A média cobre agora ~\(59t^\*\). Tudo segue consistente; restam ~4,5 min para completar os \(100t^\*\) de amostragem.
+>
+> Com 288 blocos (~\(59{,}4t^\*\)), os dois \(S_1/S_0\) sentinela estão próximos de 1,0 para \(M=1024\). Isso sugere que blocos agrupados maiores provavelmente serão escolhidos no perfil final.
+>
+> A janela passou de \(66t^\*\). Em \(u_x\), \(S_1/S_0\) caiu para 0,784 e a variância estimada continua diminuindo; \(u_y\) permanece mais correlacionado nesse \(M\).
+>
+> Com ~\(73t^\*\) amostrados, o estimador ainda mostra variabilidade entre checkpoints — comportamento honesto para uma série correlacionada. Vamos usar o resultado de \(100t^\*\), não um recorte favorável.
+>
+> A média já cobre ~\(81{,}6t^\*\); faltam cerca de 2 minutos. Com 384 blocos, haverá até 24 grupos para \(M=16384\), suficiente para testar várias escalas mantendo o filtro mínimo de 16 grupos.
+>
+> Passo 1,02 milhão; restam ~\(14{,}4t^\*\) de amostragem. A execução e os arquivos de retomada continuam íntegros.
+>
+> Com 416 blocos (~\(85{,}9t^\*\)), ambos os pontos sentinela estão em \(S_1/S_0\approx0{,}97\) para \(M=1024\). Falta cerca de 1 minuto.
+>
+> Último trecho: 448 blocos e ~\(92{,}5t^\*\) acumulados. Os valores sentinela estabilizaram em torno de \(S_1/S_0\sim1\) para o bloco básico, portanto esperamos que o \(M\) ótimo seja maior que 1024.
+>
+> O teste longo revelou um segundo problema importante, agora na média recorrente: após 496.094 amostras, os perfis dos acumuladores em `float` diferem da soma BMBC em `double` por até \(3{,}67\times10^{-5}\). Isso é estagnação de arredondamento da atualização incremental \(1/n\), não erro do BMBC.
+>
+> Portanto, não considero a implementação terminada ainda. Vou mudar somente os acumuladores estatísticos para dupla precisão (a simulação pode continuar em `float`), preservar restart/checkpoint com versão compatível e repetir a verificação. Os resultados BMBC/L2 deste primeiro longo continuam úteis, mas o checkpoint médio em `float` não deve ser tomado como referência final.
+>
+> <details><summary>Edited 6 files</summary>
+>
+> - Wrote `./include/checkpoint.h` (+1 -1)
+> - Wrote `./include/temporalAverages.cuh` (+6 -4)
+> - Wrote `./post/extract_glbm_mean_profiles.py` (+8 -4)
+> - Wrote `./src/checkpoint.cpp` (+19 -3)
+> - Wrote `./src/temporalAverages.cu` (+23 -22)
+> - Wrote `./post/extract_glbm_mean_profiles.py` (+5 -4)
+> - Wrote `./post/verify_bmbc_averages.py` (+4 -1)
+>
+> </details>
+>
+> A correção em dupla precisão passou no caso intermediário: a média recorrente e a reconstrução BMBC agora diferem por no máximo \(1{,}14\times10^{-16}\), contra \(4{,}23\times10^{-7}\) no teste curto e \(3{,}67\times10^{-5}\) no longo anterior. O checkpoint novo é v4, mantém o estado da simulação em `float32`, mas grava as 10 estatísticas em `float64`; o leitor continua aceitando v3.
+>
+> Vou repetir o caso longo Re=3200 com essa versão para que o resultado final também tenha os 10 campos confiáveis.
+>
+> A repetição corrigida começou normalmente (~2,4 GLUPS no transiente), com previsão de ~15 min. O custo adicional de `float64` só aparece quando a janela estatística começa.
+>
+> Repetição em ~\(24t^\*\), estável. Os checkpoints agora serão v4, com estatísticas em dupla precisão e estado LBM ainda em precisão simples.
+>
+> Passo 180 mil (~\(36t^\*\)); sem divergência nem erro de checkpoint.
+>
+> Transiente em ~\(48t^\*\), execução normal.
+>
+> Passo 290 mil (~\(58{,}5t^\*\)); sem anomalias.
+>
+> Transiente em ~\(70{,}5t^\*\); previsão de ~12 min restantes.
+>
+> Passo 410 mil (~\(82{,}6t^\*\)); checkpoints v4 sendo gravados normalmente.
+>
+> Transiente em ~\(92{,}7t^\*\), estável.
+>
+> Passo 530 mil (~\(106{,}8t^\*\)); faltam ~\(13t^\*\) para a janela estatística.
+>
+> Transiente em \(116{,}9t^\*\); a amostragem em dupla precisão começa em poucos segundos.
+>
+> A janela estatística v4 começou. Agora cada nó atualiza 10 acumuladores `float64`; a queda de desempenho é esperada e é o preço para evitar a estagnação numérica observada.
+>
+> Primeiros ~\(5t^\*\) da média concluídos. A execução continua estável; a estimativa total agora é ~8,5 min restantes.
+>
+> O BMBC reproduziu exatamente o primeiro longo (mesmos valores), como esperado: a mudança afetou somente os 10 acumuladores, não a dinâmica nem a amostragem dos perfis. Isso é uma boa verificação de não interferência.
+>
+> Janela em ~\(11t^\*\); execução v4 normal.
+>
+> 64 blocos concluídos; BMBC idêntico à execução anterior e acumuladores v4 ativos.
+>
+> A janela cobre ~\(19t^\*\). O throughput médio cai porque metade inicial foi transiente rápido e a segunda fase é limitada pelas escritas dos 10 campos em `float64`; ainda restam ~9 min.
+>
+> 96 blocos (~\(19{,}8t^\*\)) concluídos; resultados determinísticos continuam coincidentes.
+>
+> Janela em ~\(25t^\*\); execução normal.
+>
+> 128 blocos (~\(26{,}4t^\*\)) concluídos; sem diferenças na dinâmica.
+>
+> Amostragem em ~\(31t^\*\); restam ~8 min.
+>
+> 160 blocos (~\(33t^\*\)) concluídos; v4 segue normal.
+>
+> Janela em ~\(39t^\*\), execução consistente.
+>
+> 192 blocos (~\(39{,}6t^\*\)); sem inconsistências.
+>
+> Amostragem em ~\(45t^\*\); restam ~7,3 min.
+>
+> 224 blocos (~\(46t^\*\)) concluídos; execução v4 íntegra.
+>
+> A janela ultrapassou \(51t^\*\); sem anomalias.
+>
+> 256 blocos (~\(52{,}8t^\*\)); resultados BMBC seguem idênticos ao primeiro longo.
+>
+> Amostragem em ~\(59t^\*\); restam ~6 min.
+>
+> 288 blocos (~\(59{,}4t^\*\)) concluídos; v4 normal.
+>
+> Janela em ~\(65t^\*\); sem diferenças na dinâmica.
+>
+> 320 blocos (~\(66t^\*\)); restam ~5 min.
+>
+> Amostragem em ~\(71{,}5t^\*\), execução consistente.
+>
+> 352 blocos (~\(72{,}7t^\*\)); v4 íntegra, ~4 min restantes.
+>
+> 384 blocos (~\(79t^\*\)); resultados seguem determinísticos.
+>
+> Passo 1 milhão; ~\(81{,}6t^\*\) amostrados, menos de 3 min restantes.
+>
+> Amostragem em ~\(85{,}6t^\*\); execução v4 normal.
+>
+> 416 blocos (~\(85{,}9t^\*\)); menos de 2 min.
+>
+> Últimos ~\(8t^\*\) de amostragem; tudo consistente.
+>
+> 448 blocos (~\(92{,}5t^\*\)); menos de 1 min.
+>
+> Último checkpoint BMBC antes do fim reproduzido; aguardando apenas a gravação final do checkpoint v4 e dos perfis.
+>
+> <details><summary>Edited 2 files</summary>
+>
+> - Wrote `./src/temporalAverages.cu` (+6 -6)
+> - Wrote `./src/temporalAverages.cu` (+6 -6)
+> - Wrote `./docs/bmbc_validation.md` (+10 -1)
+>
+> </details>
+>
+> O caso longo corrigido terminou e passou a verificação: os 496.094 valores amostrados nos perfis reconstruídos dos 10 campos e no BMBC concordam até \(6{,}1\times10^{-16}\).
+>
+> O resultado também responde à pergunta de suficiência: com tolerância de semilargura de 95% igual a \(0{,}01U\), \(100t^\*\) ainda não bastaram em todo o perfil. Antes de encerrar, vou habilitar a continuação do mesmo checkpoint com uma janela estatística maior, sem descartar as amostras já feitas; a validação atual exigia `end_t_star` idêntico e impediria essa sequência natural.
+>
+> <details><summary>Created a file, edited 3 files</summary>
+>
+> - Wrote `./cases/re3200_extend_mean_profiles.toml` (+47 -0)
+> - Wrote `./docs/bmbc_validation.md` (+12 -0)
+> - Wrote `./src/simulation.cu` (+10 -3)
+> - Wrote `./.gitignore` (+2 -1)
+>
+> </details>
+</details>
+
+Implementei e validei o BMBC em 1 GPU.
+
+Principais correções:
+
+- Corrigido \(S_1\) para a fórmula BMBC de Russo–Luchini, incluindo o termo finito de borda. [Artigo de referência](https://doi.org/10.1016/j.jcp.2017.07.005).
+- As 10 médias recorrentes agora são acumuladas em `float64`, mesmo com solver `float32`.
+- Checkpoint atualizado para v4, mantendo leitura de checkpoints v3.
+- Implementada comparação com Prasad–Koseff, interpolação nas coordenadas experimentais e erro \(L_2\) relativo.
+- Adicionada seleção de \(M\) por perfil usando o alvo \(S_1/S_0\approx0{,}5\).
+- Habilitada extensão da janela estatística por restart.
+- Adicionados testes CUDA e Python.
+
+Resultado Re=3200, malha \(128^3\), SAR=1:
+
+- Transiente: \(120t^\*\)
+- Média: \(100t^\*\)
+- Amostras: 496.094
+- Blocos: 484 completos + 478 amostras parciais
+- Consistência média recorrente × BMBC:
+  - \(u_x(y)\): erro máximo \(6{,}07\times10^{-16}\)
+  - \(u_y(x)\): erro máximo \(1{,}79\times10^{-16}\)
+
+Diagnóstico estatístico para uma tolerância ilustrativa de \(0{,}01U\):
+
+| Perfil | \(M\) selecionado | mediana \(S_1/S_0\) | p95 semilargura 95% | pontos abaixo de \(0{,}01U\) |
+|---|---:|---:|---:|---:|
+| \(u_x(y)\) | 16384 | 0,641 | 2,257% \(U\) | 79,2% |
+| \(u_y(x)\) | 16384 | 0,706 | 2,552% \(U\) | 73,4% |
+
+Portanto, \(100t^\*\) ainda não é suficiente para exigir 1% de incerteza em praticamente todo o perfil.
+
+Comparação experimental:
+
+- \(u_x(y)\): \(L_2\) relativo = 0,1704; RMSE = \(0,0434U\)
+- \(u_y(x)\): \(L_2\) relativo = 0,1553; RMSE = \(0,0258U\)
+
+Arquivos principais:
+
+- [Resumo BMBC](./build-re3200/output/20261119_1000/bmbc_profiles_step_1091407_analysis/bmbc_summary.csv)
+- [Resumo experimental](./build-re3200/output/20261119_1000/bmbc_profiles_step_1091407_analysis/experimental_comparison_summary.csv)
+- [Gráfico ux](./build-re3200/output/20261119_1000/bmbc_profiles_step_1091407_analysis/ux_y_experiment.png)
+- [Gráfico uy](./build-re3200/output/20261119_1000/bmbc_profiles_step_1091407_analysis/uy_x_experiment.png)
+- [Documentação e comandos](./docs/bmbc_validation.md)
+- [Caso para estender a média](./cases/re3200_extend_mean_profiles.toml)
+- [Caso Re=10000](./cases/re10000_mean_profiles.toml)
+
+O restart v4 e a extensão da janela foram testados com sucesso. Não rodei ainda Re=10000: o próximo passo cientificamente mais útil é estender Re=3200 e observar a queda da incerteza antes de repetir a sequência em Re=10000.
+
+> agora que definimos e ajustamos o bmbc para uma gpu, queria rodar um caso em malha 128 para mais passos de tempos. além disso, a verificação do erro l2 dos perfis quando iniciamos as médias podem ser feitas em um intervalo maior, não precisa fazer em um intervalo pequeno pois pode diminuir a performance do código. assim que possível, vou para o outro computador e posso rodar um caso para malha 256 pois o refino da malha vai melhorar a concordância dos perfis. como não quero gastar a memória que tenho para você me ajuda, pode realizar as mudanças e depois me passar o comando para rodar. Podemos rodar por varios passos de tempo para testar as hipoteses do bmbc e depois eu queria uma explicaçaõ para leigos, da influencia do tamanho dos blocos, o que é M  e K etc.
+
+<details><summary>4 previous messages</summary>
+
+> Vou preparar um caso longo em \(128^3\) sem executá-lo: janela suficiente para observar vários tamanhos de bloco, relatórios BMBC mais espaçados e exportações periódicas dos perfis para calcular o \(L_2\) fora da simulação. O cálculo experimental continuará no pós-processamento, portanto não ocupará a GPU durante cada passo. Também deixarei comandos separados para começar do zero ou continuar o checkpoint atual.
+>
+> <details><summary>Created 2 files, edited 7 files</summary>
+>
+> - Wrote `./CMakeLists.txt` (+10 -0)
+> - Wrote `./case.toml` (+2 -0)
+> - Wrote `./cases/bmbc_profile_smoke.toml` (+2 -0)
+> - Wrote `./cases/re10000_mean_profiles.toml` (+2 -0)
+> - Wrote `./cases/re3200_extend_mean_profiles.toml` (+7 -5)
+> - Wrote `./cases/re3200_long_mean_profiles.toml` (+48 -0)
+> - Wrote `./cases/re3200_mean_profiles.toml` (+2 -0)
+> - Wrote `./src/simulation.cu` (+28 -4)
+> - Wrote `./src/simulation.cu` (+10 -8)
+> - Wrote `./post/analyze_bmbc_sequence.py` (+140 -0)
+>
+> </details>
+>
+> A configuração longa ficará com \(120t^\*\) de transiente e \(600t^\*\) de média. Com blocos básicos de 1024 amostras, ela produzirá cerca de 2906 blocos: quantidade suficiente para testar \(M\) desde 1024 até agrupamentos bem maiores. Os perfis serão exportados a cada 512 blocos, aproximadamente a cada \(106t^\*\) de média; o \(L_2\) será calculado depois, sem custo durante os passos intermediários.
+>
+> <details><summary>Edited 4 files</summary>
+>
+> - Wrote `./docs/bmbc_validation.md` (+23 -0)
+> - Wrote `./src/simulation.cu` (+16 -10)
+> - Wrote `./cases/re3200_extend_mean_profiles.toml` (+2 -2)
+> - Wrote `./cases/re3200_extend_mean_profiles.toml` (+1 -1)
+> - Wrote `./docs/bmbc_validation.md` (+3 -1)
+> - Wrote `./post/analyze_bmbc_sequence.py` (+10 -0)
+>
+> </details>
+</details>
+
+Preparei o caso longo \(128^3\), mas não o executei.
+
+### Configuração preparada
+
+- Transiente: \(120t^\*\)
+- Média: \(600t^\*\)
+- Total: 3.571.875 passos
+- Bloco básico: 1024 amostras
+- Relatório BMBC: a cada 256 blocos
+- Exportação dos perfis: a cada 512 blocos, aproximadamente \(105{,}7t^\*\)
+- Checkpoint: a cada 250.000 passos, sempre substituindo o anterior atomicamente
+- O erro \(L_2\) continua inteiramente no pós-processamento, sem afetar o desempenho da simulação.
+
+Arquivos:
+
+- [Caso longo do zero](./cases/re3200_long_mean_profiles.toml)
+- [Caso continuando o checkpoint atual](./cases/re3200_extend_mean_profiles.toml)
+- [Análise da sequência temporal](./post/analyze_bmbc_sequence.py)
+- [Documentação](./docs/bmbc_validation.md)
+
+### Comando recomendado: continuar o resultado atual
+
+Isso reaproveita os \(100t^\*\) já calculados e adiciona mais \(500t^\*\):
+
+```bash
+cmake -S . -B build-re3200-extended \
+  -DLBM_CONFIG_FILE="$PWD/cases/re3200_extend_mean_profiles.toml" \
+  -DLBM_RESTART_PATH_OVERRIDE="$PWD/build-re3200/output/20261119_1000/checkpoint_re3200_mean_profiles.glbm"
+
+cmake --build build-re3200-extended -j"$(nproc)"
+
+./build-re3200-extended/glbm
+```
+
+Os novos resultados continuarão no diretório original do checkpoint. Depois:
+
+```bash
+MPLCONFIGDIR=/tmp/glbm-matplotlib \
+.venv/bin/python post/analyze_bmbc_sequence.py \
+  build-re3200/output/20261119_1000
+```
+
+Esse comando produzirá a evolução de:
+
+- erro \(L_2\) experimental;
+- semilargura do intervalo de confiança;
+- mediana de \(S_1/S_0\);
+- \(M\) escolhido ao longo da simulação.
+
+Para começar do zero, use `cases/re3200_long_mean_profiles.toml` sem o argumento de restart.
+
+### Explicação simples de \(M\), \(K\) e blocos
+
+Imagine que as amostras sejam medições diárias de temperatura:
+
+- \(M\) é quantas medições colocamos em cada “pacote”;
+- \(K\) é quantos pacotes completos temos;
+- calculamos a média de cada pacote e estudamos como essas médias variam e se correlacionam.
+
+Neste caso:
+
+- bloco básico: 1024 amostras;
+- \(M=1024\): cada pacote usa um bloco;
+- \(M=16384\): cada pacote agrupa 16 blocos básicos;
+- \(K=\lfloor N/M\rfloor\): quantidade de pacotes disponíveis.
+
+Na malha 128, com uma amostra por passo:
+
+| \(M\) | duração aproximada do pacote |
+|---:|---:|
+| 1024 | \(0{,}206t^\*\) |
+| 4096 | \(0{,}826t^\*\) |
+| 16384 | \(3{,}30t^\*\) |
+| 65536 | \(13{,}2t^\*\) |
+| 131072 | \(26{,}4t^\*\) |
+
+O compromisso é:
+
+- \(M\) pequeno: temos muitos pacotes, mas pacotes vizinhos ainda são muito correlacionados;
+- \(M\) grande: reduzimos a correlação, mas ficamos com poucos pacotes, tornando a incerteza ruidosa;
+- o BMBC procura um equilíbrio, aproximadamente \(S_1/S_0=0{,}5\), mantendo \(K\) suficientemente grande — atualmente exigimos pelo menos 16.
+
+Com \(600t^\*\), teremos aproximadamente 2906 blocos básicos. Isso permite testar \(M\) até 131072 ainda com cerca de 22 grupos.
+
+### O que observar
+
+- Se a semilargura cair aproximadamente como \(1/\sqrt{T}\), a amostragem está se comportando bem.
+- Se o \(M\) selecionado estabilizar, a escala de correlação temporal foi capturada.
+- Se o BMBC diminuir, mas o \(L_2\) parar de melhorar, o erro restante provavelmente é espacial/modelagem — situação em que a malha 256 deve ajudar.
+
+Em memória, para \(128^3\), os dez acumuladores `float64` usam cerca de 160 MiB e o histórico BMBC reservado usa aproximadamente 8 MiB. O checkpoint completo atual ocupa cerca de 243 MiB e é sobrescrito, não acumulado.
+
+> Entendi, restou explicar melhor a definição de s1 e s0 para entender a razão. Além disso, rodar as médias em double ou algo similar, está fazendo o desempenho cait muitoi, antes eu obtinha cerca de 2200 mlups e agora estou com 670, uma queda grande. Talvez seja interessante me passar um comando que apaga tudo que rodei e iniciar novamente a simulação.
+
+<details><summary>3 previous messages</summary>
+
+> Vou separar duas coisas: primeiro explico \(S_0\) e \(S_1\) a partir das médias dos blocos; depois ajusto o caso longo para amostrar os dez campos a cada alguns passos, preservando a duração física dos blocos BMBC. Isso reduz bastante o custo de `float64` sem voltar ao erro de arredondamento da média longa. Também vou verificar se há uma opção de lixeira disponível antes de sugerir qualquer limpeza definitiva.
+>
+> A causa da queda é clara: não é o BMBC em si, mas atualizar dez campos completos em `float64` a cada passo. Em \(128^3\), isso faz dez operações de leitura–modificação–escrita dupla para mais de dois milhões de nós, e a RTX 4070 Laptop tem desempenho FP64 muito inferior ao FP32.
+>
+> Vou manter a precisão dupla das médias, mas amostrar a cada 8 passos. O bloco básico passará de 1024 para 128 amostras, preservando exatamente a mesma duração física: \(128\times8=1024\) passos. Assim o significado temporal do BMBC não muda, enquanto o kernel caro roda somente em 1/8 dos passos.
+>
+> <details><summary>Edited 7 files</summary>
+>
+> - Wrote `./cases/re3200_long_mean_profiles.toml` (+5 -2)
+> - Wrote `./include/bmbcIO.cuh` (+1 -0)
+> - Wrote `./post/analyze_bmbc_profiles.py` (+1 -1)
+> - Wrote `./post/analyze_bmbc_sequence.py` (+12 -4)
+> - Wrote `./src/bmbcIO.cu` (+10 -3)
+> - Wrote `./src/simulation.cu` (+2 -0)
+> - Wrote `./docs/bmbc_validation.md` (+7 -4)
+>
+> </details>
+</details>
+
+A queda de 2200 para 670 MLUPS vem principalmente da atualização dos dez campos completos em `float64` a cada passo, não do BMBC nem do cálculo de \(L_2\).
+
+Ajustei o caso longo para:
+
+- acumular as médias em `double`;
+- amostrar a cada 8 passos;
+- usar blocos de 128 amostras, mantendo a mesma duração física anterior: \(128\times8=1024\) passos;
+- calcular \(L_2\) somente no pós-processamento;
+- exportar perfis aproximadamente a cada \(105{,}7t^\*\);
+- reduzir a frequência de energia e checkpoints.
+
+A compilação foi validada. Não iniciei a simulação.
+
+## O que são \(S_0\) e \(S_1\)
+
+Considere as médias de \(K\) blocos:
+
+\[
+\bar X_1,\bar X_2,\ldots,\bar X_K
+\]
+
+Cada \(\bar X_k\) é a média de \(M\) amostras consecutivas. A média final é:
+
+\[
+\hat\mu=\frac{1}{K}\sum_{k=1}^{K}\bar X_k
+\]
+
+### \(S_0\): variação entre os blocos
+
+\[
+S_0=\sum_{k=1}^{K}(\bar X_k-\hat\mu)^2
+\]
+
+Equivalentemente:
+
+\[
+S_0=\sum_{k=1}^{K}(\bar X_k^2-\hat\mu^2)
+\]
+
+Ele mede quanto as médias dos blocos variam em torno da média final.
+
+- \(S_0\) pequeno: os blocos dão médias parecidas.
+- \(S_0\) grande: as médias ainda variam bastante.
+
+É a diagonal principal da matriz de covariância dos blocos.
+
+### \(S_1\): relação entre blocos vizinhos
+
+\[
+S_1=\sum_{k=1}^{K-1}
+\left(\bar X_k\bar X_{k+1}-\hat\mu^2\right)
+\]
+
+Ele mede se um bloco tende a ser seguido por outro com desvio semelhante:
+
+- \(S_1>0\): blocos altos tendem a ser seguidos por blocos altos; existe memória temporal.
+- \(S_1<0\): os blocos tendem a alternar.
+- \(S_1\) próximo de zero: pouca correlação entre vizinhos.
+
+O \(S_1\) do BMBC não é exatamente a covariância centrada tradicional. A forma acima contém a correção finita usada pelo estimador.
+
+A variância estimada da média é:
+
+\[
+\widehat{\mathrm{Var}}(\hat\mu)=
+\frac{S_0+2S_1}{(K-1)(K-2)}
+\]
+
+O fator 2 aparece porque, na matriz de covariância, a relação entre os blocos \(k\) e \(k+1\) aparece simetricamente acima e abaixo da diagonal.
+
+### Por que mudar \(M\)?
+
+Se \(M\) for muito pequeno, a correlação temporal pode alcançar não apenas o bloco vizinho, mas também o segundo, terceiro e outros blocos. O BMBC considera explicitamente apenas a primeira faixa de correlação, \(S_1\), e então pode subestimar o erro.
+
+Ao aumentar \(M\):
+
+- cada bloco cobre mais tempo;
+- as médias dos blocos ficam menos correlacionadas;
+- porém \(K\) diminui, pois há menos blocos disponíveis.
+
+O alvo \(S_1/S_0\approx0{,}5\) é um critério empírico para escolher esse compromisso; não é um coeficiente de correlação e não deve ser usado sozinho. Também verificamos estabilidade com \(M\) e exigimos pelo menos 16 grupos.
+
+No novo caso:
+
+- bloco básico: \(M=128\) amostras;
+- intervalo: 8 passos por amostra;
+- duração: \(128\times8=1024\) passos, igual à configuração anterior.
+
+Por exemplo:
+
+| \(M\) em amostras | passos físicos por bloco |
+|---:|---:|
+| 128 | 1024 |
+| 256 | 2048 |
+| 512 | 4096 |
+| 2048 | 16384 |
+| 16384 | 131072 |
+
+Os novos CSVs também guardarão `M_steps` e `M_t_star`, evitando ambiguidade.
+
+## Limpar os resultados anteriores
+
+Não há nenhum processo `glbm` rodando agora.
+
+Forma recuperável, enviando somente os diretórios gerados para a lixeira:
+
+```bash
+for dir in \
+  "$PWD/build-bmbc-smoke" \
+  "$PWD/build-re3200" \
+  "$PWD/build-re3200-extended" \
+  "$PWD/build-re3200-long"
+do
+  [ -e "$dir" ] && gio trash "$dir"
+done
+```
+
+Isso não remove o código, os casos ou os dados experimentais. A lixeira ainda ocupa espaço em disco até ser esvaziada.
+
+Para apagar definitivamente e liberar o espaço imediatamente:
+
+```bash
+rm -rf -- \
+  "$PWD/build-bmbc-smoke" \
+  "$PWD/build-re3200" \
+  "$PWD/build-re3200-extended" \
+  "$PWD/build-re3200-long"
+```
+
+O segundo comando é irreversível e remove também os checkpoints anteriores.
+
+## Iniciar novamente
+
+```bash
+cmake -S . -B build-re3200-long \
+  -DLBM_CONFIG_FILE="$PWD/cases/re3200_long_mean_profiles.toml"
+
+cmake --build build-re3200-long -j"$(nproc)"
+
+./build-re3200-long/glbm
+```
+
+Configuração usada: [re3200_long_mean_profiles.toml](./cases/re3200_long_mean_profiles.toml).
+
+Depois da execução:
+
+```bash
+MPLCONFIGDIR=/tmp/glbm-matplotlib \
+.venv/bin/python post/analyze_bmbc_sequence.py \
+  build-re3200-long/output/<diretorio-da-execucao>
+```
+
+Eu esperaria uma recuperação substancial dos MLUPS com intervalo 8, mas não necessariamente os 2200 completos. Se ainda ficar lento, o próximo teste conservador seria intervalo 16 e bloco básico 64, preservando novamente os mesmos 1024 passos físicos por bloco.
+
+> Finalizou a simulaçaõ e gerei os plots de bmbc sequence. Você pode avaliar e me retornar a respeito dos perfis de velocidade também e da energia se for o caso. Também pode fazer comentários a respeito dos resultados.
+
+<details><summary>5 previous messages</summary>
+
+> Vou conferir a execução completa em três frentes: evolução da energia cinética, estabilidade estatística do BMBC ao longo dos diferentes \(M\), e concordância dos dois perfis médios com Prasad–Koseff. Também vou separar sinais de falta de amostragem dos erros que parecem vir de malha/modelagem.
+>
+> Os primeiros números são bons: a consistência entre as médias recorrentes e o BMBC passou com erro de ordem \(10^{-16}\). Ao final, a incerteza p95 caiu para 0,73% de \(U\) em \(u_x(y)\) e 0,81% em \(u_y(x)\), abaixo do limiar de 1% que usamos como teste. Agora estou localizando onde permanece o erro contra o experimento e verificando se a energia apresenta deriva ou apenas flutuação estacionária.
+>
+> Context compaction
+>
+> Source: automatic
+> Status: completed
+>
+> A avaliação já aponta um quadro bem consistente: as médias passaram nas verificações numéricas, e agora vou separar quantitativamente quanto do erro de \(u_x\) vem da região muito próxima à tampa. Isso ajuda a distinguir insuficiência estatística de falta de resolução espacial.
+>
+> A separação confirmou que o maior erro absoluto de \(u_x\) está concentrado junto à tampa móvel; ao retirar apenas os pontos mais próximos das paredes, o RMSE cai de \(4{,}30\%\) para \(1{,}81\%\) de \(U\). Antes de fechar, estou conferindo também qual \(M\) foi efetivamente escolhido nos arquivos, porque o relatório contém tanto a varredura completa quanto uma seleção automática.
+</details>
+
+A simulação ficou estatisticamente bem convergida para o critério adotado. O principal erro restante, sobretudo em \(u_x\), não parece vir de falta de tempo de média, mas da resolução espacial próxima à tampa móvel. Portanto, prolongar muito mais este caso em \(128^3\) deve trazer pouco ganho; o próximo avanço relevante será a malha \(256^3\).
+
+### Verificação das médias e do BMBC
+
+A média reconstruída a partir das amostras BMBC coincide com a armazenada no checkpoint:
+
+- Diferença máxima em \(u_x(y)\): \(1{,}60\times10^{-16}\)
+- Diferença máxima em \(u_y(x)\): \(1{,}72\times10^{-16}\)
+- Tolerância do teste: \(10^{-12}\)
+- Resultado: passou
+
+No estado final foram acumulados aproximadamente \(600\,t^\*\), com 371.968 amostras.
+
+A seleção BMBC final foi:
+
+| Perfil | \(M\) | \(K\) | \(S_1/S_0\) mediano | P95 da semi-largura 95% |
+|---|---:|---:|---:|---:|
+| \(u_x(y)\) | 2048 | 181 | 0,559 | 0,728% de \(U\) |
+| \(u_y(x)\) | 2048 | 181 | 0,639 | 0,815% de \(U\) |
+
+Como as amostras estão separadas por 8 passos, \(M=2048\) corresponde a 16.384 passos do solver, ou aproximadamente \(3{,}30\,t^\*\) por bloco.
+
+Cerca de 97% dos pontos dos dois perfis têm semi-largura do intervalo de confiança inferior a 1% de \(U\). Isso indica que a incerteza estatística das médias já é pequena.
+
+O valor de \(S_1/S_0\) de \(u_y\) ainda está um pouco acima do alvo de 0,5, mas aumentar muito \(M\) reduziria \(K\) e tornaria a estimativa mais ruidosa. \(M=2048\), \(K=181\) é um compromisso adequado.
+
+### Perfil \(u_x(y)\)
+
+Ao longo da sequência:
+
+- Erro \(L_2\): 16,92% → 16,24%
+- RMSE: 4,32% → 4,30% de \(U\)
+
+O erro praticamente estabilizou depois de aproximadamente \(300\)–\(400\,t^\*\). Isso é um sinal bastante claro de que a discrepância restante não é causada pela duração da média.
+
+A concordância é boa na parte inferior e no núcleo da cavidade. A maior diferença ocorre próxima à tampa:
+
+- \(y^\*\approx0{,}989\)
+- Numérico: \(u_x/U=0{,}8314\)
+- Experimental: \(u_x/U=0{,}7067\)
+- Diferença: \(0{,}1247\,U\)
+
+Considerando somente \(|y^\*|\leq0{,}95\), o RMSE cai de 4,30% para 1,81% de \(U\). Assim, uma grande fração do erro absoluto está na camada de cisalhamento junto à tampa. Essa é justamente a região que deve se beneficiar mais da malha \(256^3\).
+
+Também convém lembrar que o último ponto experimental não está exatamente na parede, de modo que resolução, interpolação e posicionamento experimental têm bastante influência nessa comparação.
+
+[Gráfico de \(u_x(y)\)](./output/20261119_1104/bmbc_profiles_step_3571875_analysis/ux_y_experiment.png)
+
+### Perfil \(u_y(x)\)
+
+Aqui a evolução com o tempo de média foi mais evidente:
+
+- Erro \(L_2\): 15,86% → 10,74%
+- RMSE: 2,61% → 1,90% de \(U\)
+
+Isso representa uma redução de aproximadamente 32% no erro \(L_2\). A curva ainda melhorou entre as últimas exportações, embora cada vez mais lentamente.
+
+Os extremos estão bem reproduzidos:
+
+- Mínimo numérico: \(-0{,}4180\)
+- Mínimo experimental: \(-0{,}4161\)
+- Máximo numérico: \(0{,}1890\)
+- Máximo experimental: \(0{,}2127\)
+
+O ramo negativo está especialmente bom. A principal diferença aparece perto da parede esquerda, onde o máximo positivo está um pouco subestimado. Isso também é compatível com erro de resolução espacial nas regiões próximas às paredes.
+
+[Gráfico de \(u_y(x)\)](./output/20261119_1104/bmbc_profiles_step_3571875_analysis/uy_x_experiment.png)
+
+### Energia cinética
+
+Depois do início das médias em \(120\,t^\*\):
+
+- Energia cinética média: \(0{,}016903\)
+- Desvio-padrão: \(1{,}49\times10^{-4}\)
+- Flutuação relativa: aproximadamente 0,88%
+
+Não há uma deriva monotônica relevante. A inclinação muda de sinal quando analisamos diferentes partes do sinal, caracterizando flutuação estatística e não crescimento ou decaimento persistente.
+
+A autocorrelação da energia cai bastante em cerca de \(20\)–\(30\,t^\*\). Isso também sustenta que o transiente inicial de \(120\,t^\*\) foi uma escolha razoável. Naturalmente, energia global estacionária não prova sozinha que cada ponto do campo convergiu, mas ela é consistente com o diagnóstico fornecido pelos perfis e pelo BMBC.
+
+[Dados da energia cinética](./output/20261119_1104/total_kinetic_energy.dat)
+
+### Conclusão prática
+
+- A implementação das médias passou na verificação numérica.
+- O BMBC indica incerteza estatística inferior a aproximadamente 1% de \(U\) na grande maioria do domínio.
+- \(u_x\) atingiu um platô: rodar muito mais tempo em \(128^3\) provavelmente não reduzirá significativamente seu erro.
+- \(u_y\) ainda melhora lentamente, mas boa parte do erro restante também parece espacial.
+- A energia está estatisticamente estacionária.
+- O teste em \(256^3\) é agora mais informativo que prolongar bastante o caso atual.
+
+Ao passar para \(256^3\), para manter aproximadamente a mesma duração física dos blocos BMBC, será adequado dobrar `bmbc_block_samples` de 128 para 256, mantendo `sample_interval = 8`.
+
+[Sequência do erro \(L_2\)](./output/20261119_1104/bmbc_sequence_analysis/sequence_relative_L2.png) · [Sequência de \(S_1/S_0\)](./output/20261119_1104/bmbc_sequence_analysis/sequence_median_S1_over_S0.png) · [Resumo numérico](./output/20261119_1104/bmbc_sequence_analysis/bmbc_sequence_summary.csv)
+
+> Uma questão que quero levantar e preciso da sua ajuda para entender e definir, é o tempo adequado para rodar um caso 256³ oir exemplo ou 128³ (tempo total e tempo necessário para me´dias), pois isso será um fator importante quando eu for por exemplo, para um domínio 512³. Além disso, vou querer rodar casos com diferentes razões de aspecto. 0,5:1, 1:1, 1,5:1, 2:1 e 3:1.
+
+<details><summary>3 previous messages</summary>
+
+> Vou transformar isso em um critério baseado em tempo físico \(t^\*\), não em número fixo de passos — assim ele continua válido ao passar de \(128^3\) para \(256^3\), \(512^3\) e para outras razões de aspecto. Primeiro vou conferir como o código define \(t^\*\), as dimensões da malha e os parâmetros de média/BMBC, e então proponho uma matriz de tempos e critérios de parada.
+>
+> A definição do código confirma um ponto decisivo: \(t^\*=t\,U/L_x\) usa sempre \(L_x=N_x-1\), enquanto a razão de aspecto altera apenas a extensão em \(z\), com \(N_z=\mathrm{SAR}\,N\). Portanto, refinar a malha não deve multiplicar o tempo físico de transiente ou de média; ele multiplica o número de passos necessário para representar o mesmo \(t^\*\). Já a razão de aspecto pode alterar a física e o tempo de correlação, então precisa ser calibrada, não apenas escalada geometricamente.
+>
+> O resultado do caso atual permite colocar números no planejamento: para os perfis de velocidade, cerca de \(400\,t^\*\) seria o mínimo provável para chegar perto de 1% de incerteza, enquanto \(600\,t^\*\) foi a escolha segura — ambos os perfis só ficaram abaixo do critério em duas saídas consecutivas perto do fim. Também identifiquei duas limitações que precisam entrar no plano: o BMBC atual monitora apenas os dois perfis centrais, não garante a convergência dos dez campos, e o pós-processador experimental atual só reconhece razões de aspecto até 1.
+</details>
+
+O tempo adequado deve ser definido em \(t^\*\), e não em passos. Para o caso Re=3200 já temos uma boa referência: \(120\,t^\*\) de transiente mais \(600\,t^\*\) de médias foi suficiente para os perfis centrais. Refinar a malha não exige aumentar esse tempo físico, mas aumenta muito o número de passos e o custo.
+
+## Proposta inicial
+
+Para Re=3200 e razão de aspecto 1:
+
+- Transiente: \(120\,t^\*\)
+- Médias: mínimo provável de \(400\,t^\*\)
+- Médias recomendadas: \(600\,t^\*\)
+- Tempo total recomendado: \(720\,t^\*\)
+
+Os \(600\,t^\*\) são justificados porque os dois perfis só permaneceram abaixo de 1% de incerteza BMBC em duas avaliações consecutivas perto do final.
+
+Para novas razões de aspecto, eu adotaria inicialmente:
+
+- Piloto em \(128^3\): \(200\,t^\*\) de transiente + \(600\,t^\*\) de médias
+- Depois de analisar a energia, podemos reduzir o transiente das configurações seguintes
+- Para \(256^3\) e \(512^3\), reutilizar o tempo físico determinado no piloto, sem multiplicá-lo pela resolução
+
+Não há razão estatística para usar \(1200\,t^\*\) de média em \(256^3\) simplesmente porque a malha dobrou.
+
+## Conversão para passos
+
+O código usa
+
+\[
+N_{\mathrm{passos}}=
+\left\lceil
+t^\*\frac{N_x-1}{U}
+\right\rceil,
+\qquad U=0{,}0256.
+\]
+
+Para \(120+600=720\,t^\*\):
+
+| Malha | Fim do transiente | Passos de média | Passos totais |
+|---|---:|---:|---:|
+| \(128^3\) | 595.313 | 2.976.562 | 3.571.875 |
+| \(256^3\) | 1.195.313 | 5.976.562 | 7.171.875 |
+| \(512^3\) | 2.395.313 | 11.976.562 | 14.371.875 |
+
+Ou seja, dobrar a malha aproximadamente dobra o número de passos necessário para o mesmo \(t^\*\).
+
+## Critério de parada recomendado
+
+Em vez de escolher previamente um tempo muito grande, podemos rodar em extensões de \(100\,t^\*\) e parar quando, por duas exportações consecutivas:
+
+- P95 da semi-largura BMBC for menor que \(1\%\) de \(U\) para os dois perfis;
+- \(K\geq100\);
+- \(S_1/S_0\) mediano estiver aproximadamente entre 0,3 e 0,7;
+- pelo menos 95% dos pontos tiverem variância válida;
+- a mudança entre dois perfis médios cumulativos for menor que aproximadamente \(0{,}5\%\) de \(U\);
+- a energia não apresentar tendência persistente.
+
+Para comparação com os experimentos atuais, 1% é suficiente, porque os erros dos perfis ainda estão na faixa de 10–16%. Para estudar diferenças muito pequenas entre \(256^3\) e \(512^3\), talvez seja necessário reduzir a tolerância para 0,5%, o que pode exigir aproximadamente 2,5 vezes mais tempo de média.
+
+## Razões de aspecto
+
+No código atual,
+
+\[
+N_x=N_y=N,\qquad N_z=\mathrm{SAR}\,N.
+\]
+
+Portanto, as razões propostas são razões na direção \(z\):
+
+| SAR | \(N_z\) em \(128\) | \(N_z\) em \(256\) | \(N_z\) em \(512\) |
+|---:|---:|---:|---:|
+| 0,5 | 64 | 128 | 256 |
+| 1,0 | 128 | 256 | 512 |
+| 1,5 | 192 | 384 | 768 |
+| 2,0 | 256 | 512 | 1024 |
+| 3,0 | 384 | 768 | 1536 |
+
+A razão de aspecto pode alterar os modos de baixa frequência e, consequentemente, o tempo necessário de média. Não recomendo assumir que o tempo cresce linearmente com SAR. O correto é calibrar cada SAR em \(128\) e usar o BMBC para medir o tempo de correlação efetivo.
+
+O BMBC atual mede os perfis no plano central em \(z\); ele não faz média espacial ao longo de \(z\). Portanto, aumentar SAR não garante automaticamente redução da incerteza.
+
+## Crescimento do custo
+
+Para um mesmo intervalo em \(t^\*\), o trabalho cresce aproximadamente como
+
+\[
+\text{custo}\propto \mathrm{SAR}\,N^4.
+\]
+
+Em relação a \(128^3\), SAR=1:
+
+- \(256^3\): aproximadamente 16 vezes mais trabalho;
+- \(512^3\): aproximadamente 256 vezes mais trabalho;
+- SAR=3 multiplica tudo novamente por 3.
+
+Usando os 670 MLUPS observados como estimativa conservadora para \(720\,t^\*\):
+
+| Malha, SAR=1 | Tempo aproximado |
+|---|---:|
+| \(128^3\) | 3,1 horas |
+| \(256^3\) | 50 horas |
+| \(512^3\) | 33 dias |
+
+Para SAR=3, seriam aproximadamente 9,3 horas, 6,2 dias e 100 dias, respectivamente, se o desempenho agregado permanecesse em 670 MLUPS. Multi-GPU e a redução da frequência das médias podem diminuir bastante esses tempos.
+
+## Frequência das médias
+
+Para manter o mesmo espaçamento físico das amostras do caso atual, uma configuração coerente seria:
+
+| Malha | `sample_interval` | `bmbc_block_samples` |
+|---|---:|---:|
+| 128 | 8 | 128 |
+| 256 | 16 | 128 |
+| 512 | 32 | 128 |
+
+Isso mantém cada bloco básico em aproximadamente \(0{,}206\,t^\*\).
+
+Essa é uma alternativa melhor para desempenho do que manter `sample_interval = 8` e aumentar o tamanho dos blocos. Em outras palavras, refinando a malha, podemos amostrar a cada mais passos sem aumentar o intervalo físico entre amostras.
+
+Também podemos testar uma configuração mais econômica, por exemplo intervalos 32, 64 e 128, mas eu validaria isso primeiro em \(128^3\) antes de usá-la nos casos grandes.
+
+## Limitações que precisamos resolver
+
+Há dois pontos importantes:
+
+- O BMBC atual verifica apenas \(u_x(y)\) e \(u_y(x)\). Isso não prova que os dez campos — especialmente tensões — tenham a mesma precisão estatística. Para validar todos eles, seria interessante adicionar BMBC em algumas tensões e pontos representativos.
+- Os dados experimentais e o pós-processador atual reconhecem SAR 0,5 e 1. Para SAR 1,5, 2 e 3, teremos BMBC e convergência de malha, mas não erro experimental \(L_2\), a menos que sejam adicionadas referências. O pós-processador também precisa ser ajustado para não falhar quando não houver referência.
+
+Minha sugestão de campanha seria: calibrar as cinco razões em \(128\), escolher as mais relevantes para \(256\), e levar para \(512\) apenas os casos que responderem às perguntas físicas principais. Isso evita que o estudo em \(512\) se transforme em centenas de dias de GPU antes de conhecermos os tempos estatísticos de cada geometria.
+
+> ainda precisa levar em consideração outros fatores. Esse código vai funcionar em multi gpu, isso pode melhorar o desemepengo e é fundamental para conseguir rodar domínios maiores. No final das contas, estou utilizando ele para obter resultados para um artigo em que avaliuo o efeito de diferentes sars e reynolds diferentes. Na minha ideia eu quero obter:&#x20;
+>
+> perfis médios nessas posições que já fazemos
+> perfis rms com ux rms ao longo de y, e uy rms ao longo de x e os produtos cruzados do tensor de reynolds em ambas as linhas
+> budget de turbulência que já implementei em outro repositório e acredito que você ja teve acesso à ele no cuda_lbm_3d
+> obtenção dos perfis médios de sxy em diferentes posições: ao longo de y em x = 0 e x=L em z=1/2; e ao longo de x em y = 0 em z =1/2 para avaliar a troca do sinal da derivada sxy. Além disso, com esse resutlado depois vou comparar o valor dessa componente do tensor com as derivadas obtidas numericamente através das velocidades médias que obtive do escoamento, fazendo aproximações de segunda e de quarta ordem da derivada numérica e fazendo comparações, com o intuito de mostrar que a obtenção de forma local no lbm traz bons resultados.&#x20;
+> Além disso, tendo um snapshot volumétrico dos campos médios de velocidade,. eu consigo identificar a posição dos vórtices que vou analisar nesse artigo, primary vortex, downstream secondary vortex e upstream secondary vortex, que são vortices característicos e bem conhecidos da cavidade.
+>
+> Por fim, caberia também uma análise do triangulo de anisotropia dos diferentes casos e dos espectros de energia. Pelo meu entedimento, temos várias implementações pela frente, e quero que você faça isso com calma e não de forma monlítica, e também tem os diversos pós processamentos que vamos criar, podem ser baseados em outros repositórios e outras branchs que já fiz. Se você tiver dificuldade em consultar, posso fornecer acesso ao meu github e você verifica lá. A maioria dessas implementações e post processing codes está em cuda_lbm_3d na branch budget.
+
+<details><summary>3 previous messages</summary>
+
+> Concordo: o objetivo científico é bem maior do que “convergir dois perfis”, e o tempo de média precisa ser dimensionado pelo observável mais lento e mais ruidoso — provavelmente tensões de Reynolds, budgets e espectros, não pelas velocidades médias. Vou primeiro mapear o que já existe neste repositório, no suporte multi-GPU e nas branches/repositórios locais, e então organizar uma sequência incremental de implementação e validação, sem misturar tudo numa única mudança.
+>
+> Há bastante material reaproveitável localmente: o checkout de `cuda_lbm_3D` já contém as referências remotas `origin/budget`, `origin/multi-gpu-budget`, `origin/powerSpectra` e códigos de RMS, \(S_{xy}\), identificação de vórtices e espectros. Portanto, não preciso de acesso adicional ao GitHub neste momento e não vou trocar a branch nem tocar nas alterações locais existentes; vou consultar os arquivos diretamente pelas referências Git.
+>
+> O reuso é real, mas precisa de auditoria científica antes do porte. A branch `budget` acumula médias, seis produtos de Reynolds, dissipação e fluxos, porém parte do fluxo principal está comentada e as fórmulas usam convenções de sinal/fatores que precisam ser verificadas. Além disso, a implementação mais recente de RMS calcula médias e flutuações em janelas sucessivas; para o artigo, é preferível obter primeiro e segundo momentos na mesma janela estacionária, com incerteza BMBC para cada observável.
+</details>
+
+Você tem razão: o tempo de simulação não pode ser definido apenas pela convergência das velocidades médias. Para o artigo, o observável limitante provavelmente será o budget, os produtos de Reynolds ou os espectros. Multi-GPU reduz o tempo de parede e distribui memória, mas não reduz o tempo físico \(t^\*\) necessário para convergência estatística.
+
+Também confirmei que consigo acessar localmente o `cuda_lbm_3D` e as referências `origin/budget`, `origin/multi-gpu-budget` e `origin/powerSpectra`. Não preciso de novo acesso ao GitHub por enquanto.
+
+## O que já existe
+
+Há material reaproveitável para:
+
+- perfis médios;
+- RMS e \(\langle u'_x u'_y\rangle\);
+- campos médios de \(S_{xy}\);
+- identificação de PV, DSV e USV;
+- budget de energia cinética turbulenta;
+- espectros tridimensionais;
+- suporte multi-GPU.
+
+Mas não devemos simplesmente copiar esse código. Encontrei diferenças importantes:
+
+- a branch `budget` usa acumuladores na precisão do solver e contadores derivados do passo;
+- parte do fluxo principal está comentada;
+- as convenções de sinal e fatores de produção, dissipação e transporte precisam ser auditadas;
+- a expressão local de \(S_{ij}\) não é idêntica à usada no `glbm`;
+- a implementação mais recente calcula médias e flutuações em janelas sucessivas;
+- o critério antigo baseado na diferença entre médias acumuladas tende naturalmente a zero e é menos confiável que o BMBC.
+
+A ideia será aproveitar as equações, os formatos e os pós-processamentos, mas reimplementar cada módulo sobre a infraestrutura atual.
+
+## Situação do multi-GPU
+
+O `glbm` atual suporta especificamente uma ou duas GPUs, com decomposição em \(z\). Os perfis BMBC e as médias volumétricas já consideram essa decomposição.
+
+Antes dos casos científicos, precisamos validar:
+
+- equivalência entre uma e duas GPUs;
+- restart e checkpoint multi-GPU;
+- médias, RMS e BMBC atravessando a interface entre GPUs;
+- strong scaling e MLUPS agregado;
+- custo das estatísticas separadamente do solver.
+
+Para domínios como \(512^3\), SAR=3, duas GPUs podem não ser suficientes. Atualmente há aproximadamente:
+
+- 80 bytes/nó para os dois estados LBM em `float`;
+- 80 bytes/nó para os dez campos médios em `double`;
+- mais tipos de nó, halos e buffers.
+
+Assim, \(512\times512\times1536\) exige pelo menos cerca de 66 GB de VRAM agregada apenas para estado e médias atuais. Acrescentar os seis componentes completos do tensor de Reynolds em `double` elevaria isso para aproximadamente 85 GB, antes dos campos do budget.
+
+Portanto, será necessário:
+
+1. tornar os módulos estatísticos opcionais;
+2. não manter todos os observáveis volumétricos simultaneamente;
+3. eventualmente generalizar de duas para \(N\) GPUs.
+
+## Arquitetura estatística proposta
+
+Não devemos usar uma única frequência para tudo.
+
+- Perfis centrais: baratos, podem ser amostrados frequentemente.
+- Médias volumétricas: caras e limitadas por banda de memória, podem ser amostradas com intervalo maior.
+- Probes para espectros temporais: baratos, mas exigem alta frequência.
+- Snapshots volumétricos para espectros espaciais: muito caros e pouco frequentes.
+- Budget volumétrico: caro e deve ter uma fase própria ou conjunto mínimo de acumuladores.
+
+Os diferentes módulos terão seus próprios intervalos definidos em \(\Delta t^\*\), e não simplesmente em passos.
+
+## Sequência de implementação
+
+### 1. Base multi-GPU e benchmark
+
+Primeiro devemos estabilizar a fundação:
+
+- teste automático uma GPU versus duas GPUs;
+- teste de checkpoint/restart;
+- benchmark com estatísticas desligadas, perfis ligados e médias volumétricas ligadas;
+- relatório de memória por GPU;
+- decidir se a generalização para mais de duas GPUs deve ocorrer já antes do \(512^3\).
+
+### 2. Perfis médios, RMS e tensor de Reynolds nas linhas
+
+Adicionar, nas duas linhas centrais:
+
+\[
+\overline{u_x},\quad \overline{u_y},\quad
+\overline{u_x^2},\quad \overline{u_y^2},\quad
+\overline{u_xu_y}.
+\]
+
+No pós-processamento:
+
+\[
+u_{x,\mathrm{rms}}
+=
+\sqrt{\overline{u_x^2}-\overline{u_x}^2},
+\]
+
+\[
+u_{y,\mathrm{rms}}
+=
+\sqrt{\overline{u_y^2}-\overline{u_y}^2},
+\]
+
+\[
+\overline{u'_xu'_y}
+=
+\overline{u_xu_y}-\overline{u_x}\,\overline{u_y}.
+\]
+
+Esses momentos devem ser calculados na mesma janela estacionária. O BMBC será estendido para monitorar também \(u_x^2\), \(u_y^2\) e \(u_xu_y\). Só então poderemos determinar corretamente o tempo de média: RMS e covariâncias devem convergir mais lentamente que as velocidades médias.
+
+Essa etapa já permitirá comparar com os arquivos de Prasad–Koseff existentes.
+
+### 3. \(S_{xy}\) local versus derivadas
+
+Boa parte dessa etapa já está esboçada no repositório atual. Precisamos consolidar:
+
+- \(S_{xy}(y)\) em \(x=0\), \(x=L\), \(z=1/2\);
+- \(S_{xy}(x)\) em \(y=0\), \(z=1/2\);
+- nós da parede e primeiros nós internos separadamente;
+- derivadas FD2 e FD4, incluindo fórmulas unilaterais nas paredes;
+- detecção interpolada das trocas de sinal;
+- erro \(L_2\), RMSE e erro máximo por região;
+- normalização consistente:
+
+\[
+S_{xy}^\*=\frac{L}{U}S_{xy}.
+\]
+
+A comparação será
+
+\[
+\overline{S}_{xy}^{LBM}
+\quad\text{versus}\quad
+\frac12\left(
+\frac{\partial\overline{u_x}}{\partial y}
++
+\frac{\partial\overline{u_y}}{\partial x}
+\right).
+\]
+
+Também faremos um teste em escoamento analítico, como Couette, antes de aplicar à cavidade.
+
+### 4. Campos médios e posições dos vórtices
+
+Exportar os campos médios de velocidade em formato compacto, sem duplicar desnecessariamente todo o checkpoint.
+
+No plano \(z=1/2\), localizar:
+
+- primary vortex;
+- downstream secondary vortex;
+- upstream secondary vortex.
+
+O método deve usar pontos críticos interpolados do campo médio, eventualmente auxiliados pela função corrente, e não apenas escolher o nó de menor velocidade. O código de `vortexAuxFunctions.py` será uma referência, mas receberá testes com campos sintéticos e análise de sensibilidade à malha.
+
+### 5. Tensor de Reynolds e anisotropia
+
+Para o triângulo de anisotropia precisamos dos seis componentes:
+
+\[
+R_{ij}=\overline{u'_iu'_j}.
+\]
+
+Depois calculamos
+
+\[
+b_{ij}=\frac{R_{ij}}{2k}-\frac13\delta_{ij},
+\qquad
+k=\frac12R_{ii}.
+\]
+
+A partir dos autovalores de \(b_{ij}\), podemos produzir:
+
+- triângulo baricêntrico;
+- invariantes de Lumley;
+- trajetórias ao longo das linhas ou regiões próximas aos vórtices;
+- comparação entre Reynolds e SAR.
+
+Precisaremos definir se o artigo demanda anisotropia volumétrica, no plano central ou apenas em linhas. Essa escolha altera muito a memória.
+
+### 6. Budget de turbulência
+
+A branch `budget` contém uma base para:
+
+- energia cinética turbulenta;
+- produção;
+- dissipação;
+- transporte turbulento;
+- transporte de pressão;
+- transporte viscoso.
+
+Antes do porte, será necessário escrever explicitamente a equação adotada, sinais, fatores \(1/2\), normalização e quais termos são armazenados como fluxo ou divergência.
+
+Também serão necessários:
+
+- tratamento de derivadas nas paredes;
+- halos das médias para derivadas na interface multi-GPU;
+- teste de fechamento do budget;
+- campos manufaturados para validar cada termo separadamente.
+
+Essa será uma etapa própria, posterior à validação do tensor de Reynolds.
+
+### 7. Espectros
+
+Precisamos definir que espectro o artigo realmente quer:
+
+- espectro temporal em probes;
+- espectro temporal da energia global;
+- espectro espacial unidimensional;
+- espectro espacial tridimensional.
+
+Como a cavidade é não homogênea e não periódica, um espectro 3D global obtido por FFT não possui a mesma interpretação de um espectro isotrópico periódico. A branch `powerSpectra` utiliza janela de Hann e verifica Parseval, mas a região analisada e a interpretação física precisam ser definidas.
+
+Para avaliar influência de SAR e Reynolds, minha preferência inicial é:
+
+- séries temporais em probes ligados aos vórtices;
+- PSD por Welch;
+- energia global;
+- eventualmente espectros espaciais em subdomínios cuidadosamente definidos.
+
+Essas séries podem ser coletadas durante a mesma janela usada para RMS e budget, sem acrescentar tempo físico.
+
+## Consequência para o tempo total
+
+Os \(720\,t^\*\) atuais respondem bem à pergunta sobre velocidades médias. Ainda não podemos afirmar que sejam suficientes para RMS, tensor de Reynolds e budget.
+
+Um planejamento conservador seria:
+
+- transiente: \(120\)–\(200\,t^\*\);
+- velocidades e primeiros momentos: aproximadamente \(600\,t^\*\);
+- segundo e terceiro momentos/budget: inicialmente mais \(600\,t^\*\), estendendo em blocos de \(100\)–\(200\,t^\*\);
+- espectros: coletados simultaneamente na última janela.
+
+Isso resultaria inicialmente em algo entre \(1320\) e \(1800\,t^\*\), mas não precisa ser necessariamente assim. Se conseguirmos calcular primeiros e segundos momentos corretamente na mesma janela, RMS e anisotropia não acrescentam outra janela. O budget será o fator que decidirá se uma segunda fase é realmente necessária.
+
+## Próximo passo
+
+A primeira implementação deve ser pequena: validar o caminho multi-GPU e acrescentar somente RMS e \(\overline{u'_xu'_y}\) nas duas linhas centrais, incluindo BMBC, checkpoint e comparação experimental. Essa etapa nos dará a primeira resposta objetiva sobre quanto tempo os observáveis turbulentos realmente precisam antes de avançarmos para campos volumétricos e budgets.

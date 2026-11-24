@@ -6,7 +6,7 @@
 
 #include "bmbc.cuh"
 
-// Single-GPU BMBC sidecar accompanies a .glbm checkpoint.
+// Decomposition-independent BMBC sidecar accompanies a .glbm checkpoint.
 // Example: checkpoint.glbm -> checkpoint.glbm.bmbc
 // Call on the device owning the BMBC buffers, once the sampling stream is synchronized.
 void writeBMBCSnapshot(
