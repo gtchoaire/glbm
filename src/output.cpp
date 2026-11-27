@@ -11,6 +11,7 @@
 #include <ctime>
 
 #include PROPERTIES
+#include "../include/statisticsConfig.h"
 
 namespace
 {
@@ -19,25 +20,23 @@ constexpr const char *PRECISION_NAME = sizeof(dfloat) == sizeof(float) ? "float"
 constexpr const char *VTK_SCALAR_TYPE = sizeof(dfloat) == sizeof(float) ? "Float32" : "Float64";
 }
 
-bool createOutputDirectory(std::filesystem::path &output_directory)
+bool prepareRunDirectory(std::filesystem::path &run_directory)
 {
-    const auto now = std::time(nullptr);
-    std::tm local_time{};
-    if (localtime_r(&now, &local_time) == nullptr)
+    std::error_code error;
+    run_directory = std::filesystem::absolute(std::filesystem::current_path(), error);
+    if (error)
         return false;
 
-    std::ostringstream directory_name;
-    directory_name << std::put_time(&local_time, "%Y%m%d_%H%M");
-    output_directory = std::filesystem::path("output") / directory_name.str();
-
-    std::error_code error;
-    std::filesystem::create_directories(output_directory, error);
+    std::filesystem::create_directories(run_directory / "checkpoint", error);
+    if (error)
+        return false;
+    std::filesystem::create_directories(run_directory / "statistics", error);
     return !error;
 }
 
-bool writeSimulationInfo(const std::filesystem::path &output_directory)
+bool writeSimulationMetadata(const std::filesystem::path &statistics_directory)
 {
-    const std::filesystem::path path = output_directory / "info.txt";
+    const std::filesystem::path path = statistics_directory / "metadata.txt";
     std::ofstream file(path);
     if (!file) return false;
 
@@ -49,11 +48,21 @@ bool writeSimulationInfo(const std::filesystem::path &output_directory)
          << "SAR = " << SAR << '\n'
          << "Umax = " << U_MAX << '\n'
          << "Stencil = " << STR(STENCIL) << '\n'
+         << "Reconstruction order = " << ORDER << '\n'
          << "Precision = " << PRECISION_NAME << '\n'
+         << "GPUs = " << NUM_GPUS << '\n'
          << "Nsteps = " << N_STEPS << '\n'
-         << "Kinetic energy output = " << (SAVE_KINETIC_ENERGY_OUTPUT ? "true" : "false") << '\n'
-         << "Kinetic energy interval = " << KINETIC_ENERGY_INTERVAL << '\n'
-         << "Checkpoint file = " << (output_directory / std::filesystem::path(CHECKPOINT_PATH)) << '\n'
+         << "Local field statistics = " << (STATS_ENABLED ? "true" : "false") << '\n'
+         << "Statistics start t* = " << STATS_START_T_STAR << '\n'
+         << "Statistics end t* = " << STATS_END_T_STAR << '\n'
+         << "Statistics sample interval = " << STATS_SAMPLE_INTERVAL << '\n'
+         << "BMBC = " << (BMBC_ENABLED_VALUE ? "true" : "false") << '\n'
+         << "BMBC sample interval = " << BMBC_SAMPLE_INTERVAL << '\n'
+         << "BMBC block samples = " << BMBC_BLOCK_SAMPLES_VALUE << '\n'
+         << "Global statistics = " << (SAVE_KINETIC_ENERGY_OUTPUT ? "true" : "false") << '\n'
+         << "Global statistics interval = " << KINETIC_ENERGY_INTERVAL << '\n'
+         << "Checkpoint interval = " << CHECKPOINT_INTERVAL << '\n'
+         << "Checkpoint file = " << (std::filesystem::path("checkpoint") / std::filesystem::path(CHECKPOINT_PATH)).generic_string() << '\n'
          << "block x = " << BLOCK_NX << '\n'
          << "block y = " << BLOCK_NY << '\n'
          << "block z = " << BLOCK_NZ << '\n';
@@ -65,6 +74,7 @@ bool writeVti(const std::vector<LBMState *> &states, const int step,
               const std::filesystem::path &output_directory)
 {
     if (states.size() != static_cast<size_t>(NUM_GPUS)) return false;
+    std::filesystem::create_directories(output_directory);
 
     std::ostringstream filename;
     filename << "state_" << std::setw(8) << std::setfill('0')
@@ -130,6 +140,7 @@ bool writeVti(const std::vector<LBMState *> &states, const int step,
 bool writeBinaryFields(const std::vector<LBMState *> &states, const int step,
                        const std::filesystem::path &output_directory)
 {
+    std::filesystem::create_directories(output_directory);
     std::ostringstream suffix;
     suffix << std::setw(8) << std::setfill('0') << step;
 

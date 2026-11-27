@@ -7,8 +7,10 @@ if [[ $# -ne 1 ]]; then
 fi
 
 checkpoint="$(realpath -- "$1")"
-if [[ ! -f "$checkpoint" || ! -f "$checkpoint.bmbc" ]]; then
-    echo "Checkpoint or BMBC sidecar not found: $checkpoint" >&2
+run_dir="$(dirname -- "$(dirname -- "$checkpoint")")"
+statistics="$run_dir/statistics"
+if [[ ! -f "$checkpoint" || ! -f "$statistics/bmbc_blocks.bin" ]]; then
+    echo "Checkpoint or BMBC statistics not found: $checkpoint" >&2
     exit 1
 fi
 
@@ -16,33 +18,34 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"
 build_dir="$repo_dir/build-re3200-turbulence-256-pilot"
 config="$repo_dir/cases/re3200_turbulence_profiles_256_extend.toml"
-run_dir="$(dirname -- "$checkpoint")"
+cp "$config" "$run_dir/case.toml"
 
 cmake -S "$repo_dir" -B "$build_dir" \
     -DCMAKE_CUDA_ARCHITECTURES=89 \
-    -DLBM_CONFIG_FILE="$config" \
+    -DLBM_CONFIG_FILE="$run_dir/case.toml" \
     -DLBM_NUM_GPUS_OVERRIDE=2 \
     -DLBM_RESTART_PATH_OVERRIDE="$checkpoint"
 cmake --build "$build_dir" --target glbm -j"$(nproc)"
+cp "$build_dir/glbm" "$run_dir/glbm"
 
 (
-    cd -- "$build_dir"
+    cd -- "$run_dir"
     ./glbm 2>&1 | tee -a extension_run.log
 )
 
-csv="$(find "$run_dir" -maxdepth 1 -type f -name 'bmbc_profiles_step_*.csv' \
-    -printf '%f\n' | sort -V | tail -n 1)"
-snapshot="$checkpoint.bmbc"
-if [[ -z "$csv" || ! -f "$snapshot" ]]; then
+snapshot="$statistics/bmbc_blocks.bin"
+if [[ ! -f "$snapshot" ]]; then
     echo "Extension completed, but final BMBC outputs were not found." >&2
     exit 1
 fi
 
-MPLCONFIGDIR=/tmp/glbm-matplotlib python3 \
-    "$repo_dir/post/analyze_turbulence_profiles.py" \
-    "$run_dir/$csv" --snapshot "$snapshot"
+(
+    cd -- "$run_dir"
+    python3 "$repo_dir/post/process_statistics.py"
+    MPLCONFIGDIR=/tmp/glbm-matplotlib python3 "$repo_dir/post/plot_statistics.py"
+)
 
 echo
 echo "Extension completed. Send these summaries:"
-echo "  $run_dir/${csv%.csv}_turbulence_analysis/experimental_comparison_summary.csv"
-echo "  $run_dir/${csv%.csv}_turbulence_analysis/turbulence_bmbc_summary.csv"
+echo "  $statistics/derived/data/experiment_summary.dat"
+echo "  $statistics/derived/data/line_statistics.dat"

@@ -13,8 +13,10 @@ constexpr int GLOBAL_NX = N;
 constexpr int GLOBAL_NY = N;
 constexpr int GLOBAL_NZ = SAR * N;
 static_assert(NUM_GPUS == 1 || NUM_GPUS == 2, "NUM_GPUS must be 1 or 2");
+static_assert(GLOBAL_NZ == SAR * N, "SAR * N must be an integer");
 static_assert(GLOBAL_NZ % NUM_GPUS == 0, "GLOBAL_NZ must be divisible by NUM_GPUS");
-static_assert(ORDER == 2, "Only second-order reconstruction is supported");
+static_assert(ORDER == 2 || ORDER == 3,
+              "Only second- and third-order reconstruction are supported");
 
 constexpr dfloat U_MAX = U_MAX_VALUE;
 constexpr dfloat RHO_0 = 1.0;

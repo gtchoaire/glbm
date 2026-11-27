@@ -1,68 +1,99 @@
-# Centerline turbulence profiles
+# Statistics
 
-The optional `bmbc_turbulence_profiles` mode samples the raw moments required
-for the requested article profiles without allocating volumetric Reynolds
-stresses:
+Only the quantities required by the figures are stored.
 
-- along the central y line: `ux`, `uy`, `ux^2`, and `ux*uy`;
-- along the central x line: `ux`, `uy`, `uy^2`, and `ux*uy`.
+| Figure | Statistic | Source |
+|---|---|---|
+| Kinetic energy, dissipation rate | volume averages in time | `global_statistics.csv` |
+| Probe velocity and spectrum | `u_i(t)`, `E_ii(f)` | `global_statistics.csv` |
+| Energy balance (`energy_balance.dat`) | `P_lid`, `<2 nu S_ij S_ij>_V` | `local_fields.bin` |
+| Velocity and Reynolds stress profiles | `<u_i>`, `r_ij`, rms | `bmbc_blocks.bin` |
+| Velocity and vorticity maps | `<u_i>`, `curl <u>` | `local_fields.bin` |
+| Lumley triangle | `xi`, `eta` | both |
+| Kolmogorov map | `min_z(eta_K)/dx` in the x-y plane | `local_fields.bin` |
 
-All moments use the same stationary window and the same geometric-center
-interpolation. The post-processor computes
+Each sample evaluates 16 quantities per node: `u_i` (3), `u_i u_j` (6), `S_ij`
+(6) and `S2 = S_ij S_ij` (1). `<S_ij>` and `<S2>` serve the Kolmogorov scale.
+The stored state is post-collision, `m* = (1 - omega) m + omega u u`, so the
+strain rate follows from the moments without finite differences:
 
 ```text
-ux_rms(y) = sqrt(<ux^2> - <ux>^2)
-uy_rms(x) = sqrt(<uy^2> - <uy>^2)
-<ux'uy'> = <ux uy> - <ux><uy>
+S_ij = (omega / (2 cs2)) (u_i u_j - m*_ij) / (1 - omega)
+cs2 = 1/3, omega = 1/tau, tau = 1/2 + 3 nu, nu = U L / Re, L = N - 1
 ```
 
-The uncertainty is not obtained by independently combining scalar error bars.
-For each spatial point, the BMBC lag-zero and lag-one cross-covariance matrices
-of the raw block moments are propagated through the nonlinear expression with
-the delta method. This preserves correlations between first and second
-moments.
+`<.>` is the arithmetic mean over the samples in `(start_t_star, end_t_star]`,
+taken every `sample_interval` steps, with `t* = t U / L`.
+`local_fields.bin` keeps the 16 means at every node and `bmbc_blocks.bin` the
+block means on `y_center` (x = z = 1/2) and `x_center` (y = z = 1/2). With an
+even number of nodes a center value is the mean of the surrounding nodes, with
+products evaluated at the nodes.
 
-The digitized Prasad-Koseff turbulence curves retain the plotting
-amplifications used in the comparison figures: RMS values are multiplied by
-10 and Reynolds shear by 500. The post-processor removes these factors before
-computing errors or drawing the experimental points.
+```text
+<f>_V = sum(w f) / ((Nx - 1)(Ny - 1)(Nz - 1))
+<E>_V  = <u_i u_i>_V / 2                                     / U^2
+<2 nu S_ij S_ij>_V                                           L / U^3
 
-Sidecars using this extended layout are BMBC format v2. The option is disabled
-in all existing mean-velocity cases, so their v1 checkpoints and restarts keep
-the validated layout.
+u'_i  = u_i - <u_i>
+r_ij  = <u'_i u'_j> = <u_i u_j> - <u_i><u_j>                 / U^2
+rms_i = sqrt(r_ii)                                           / U
+
+omega = curl <u>                                             L / U
+
+b_ij  = r_ij / r_kk - delta_ij / 3
+6 eta^2 = b_ij b_ji,  6 xi^3 = b_ij b_jk b_ki
+
+s_ij    = S_ij - <S_ij>
+epsilon = 2 nu <s_ij s_ij> = 2 nu (<S2> - <S_ij><S_ij>)      L / U^3
+eta_K   = (nu^3 / epsilon)^(1/4)                             / L
+```
+
+Notation follows Pope (2000): `epsilon` is the dissipation rate of turbulent
+kinetic energy. The global series `2 nu S_ij S_ij` is the viscous dissipation of
+the total kinetic energy `E`, mean flow included, so that
+`d<E>_V/dt = P_lid - <2 nu S_ij S_ij>_V`. Volume integrals use the trapezoidal
+rule: `w` is 1/2 on faces, 1/4 on edges and 1/8 on corners, because the wall
+nodes lie on the walls (see also Luo et al., PRE 83, 056710, 2011).
+
+```text
+P_lid = U integral(2 nu <S_xy> dA) / V  on the lid             L / U^3
+E_ii(f): one-sided spectrum, integral(E_ii df) = <u'_i u'_i>   U L
+```
+
+The probe is the point of Prasad and Koseff's time traces and spectra, on the
+vertical centerline, 7 mm above the floor (`y/L = 7/150`), or 5 mm for
+`Re = 10000`, by trilinear interpolation. The spectrum is a Welch average of 7
+Hann segments with 50% overlap over the sampling window.
+
+The vorticity uses fourth-order differences in the plane and a centered
+difference across it. The planes are listed in `PLANES` in
+`process_statistics.py` and can be changed after the run.
+
+`wall_shear.dat` holds `<S_xy>` in lattice units on the upstream (`x = 0`),
+downstream (`x = L`) and bottom (`y = 0`) walls at mid-span, from the moments and
+as `1/2 (d<u_x>/dy + d<u_y>/dx)` with second- and fourth-order differences of the
+mean velocity. `vortex_sizes.dat` holds the height and length, over `L`, of the
+upstream (USV) and downstream (DSV) corner vortices: the point where `<S_xy>`
+changes sign on each wall, by linear interpolation between nodes.
+
+The Kolmogorov map takes, at each `(x, y)`, the smallest `eta_K` over all `z`,
+divided by the grid spacing; nodes with a ratio below 1 are red.
+
+Global averages, velocities, `r_ij`, rms, dissipation and the Kolmogorov scale
+on the two lines carry BMBC intervals. The maps and the Lumley invariants do
+not.
+
+The digitized Prasad-Koseff RMS values are amplified by 10 and the Reynolds
+shear by 500; the post-processor removes both factors.
 
 ## 256-cubed pilot
 
-The first pilot uses two GPUs, Re=3200, 120 t-star of transient and 100 t-star
-of sampling. It stores profiles and energy but not the ten volumetric averages.
-
 ```bash
-cd /home/geoen/glbm
 ./scripts/run_re3200_turbulence_256_pilot.sh
-```
-
-If interrupted after a checkpoint, resume with:
-
-```bash
-./scripts/run_re3200_turbulence_256_pilot.sh \
-  /absolute/path/to/checkpoint_re3200_turbulence_256_pilot.glbm
-```
-
-The script runs the multivariate BMBC and experimental comparison after the
-simulation. The 100 t-star window is an initial diagnostic, not an assumption
-that RMS and Reynolds shear have converged.
-
-## Extending the validated pilot
-
-After checking the 100 t-star pilot, extend the same BMBC history from the
-saved checkpoint to 600 t-star of total sampling (ending at t-star = 720):
-
-```bash
-cd /home/geoen/glbm
 ./scripts/extend_re3200_turbulence_256.sh \
-  /absolute/path/to/checkpoint_re3200_turbulence_256_pilot.glbm
+  /absolute/path/to/run/checkpoint/checkpoint_re3200_turbulence_256_pilot.glbm
 ```
 
-The script reuses the pilot build directory, appends the solver log, preserves
-the existing run directory, and regenerates the turbulence and BMBC summaries
-after the extension.
+The first command samples 100 t-star after 120 t-star of transient; the second
+extends the same history to 600 t-star. An interrupted pilot resumes with its
+checkpoint path as the first argument.

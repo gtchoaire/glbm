@@ -17,7 +17,7 @@ __device__ inline void apply_boundaries(
     {
         const dfloat rho_I = pop[0] + pop[2] + pop[4] + pop[6] + pop[8] + pop[10] + pop[12] + pop[20];
 
-        const dfloat rho = static_cast<dfloat>(12) * rho_I / static_cast<dfloat>(7);
+        const dfloat rho = static_cast<dfloat>(216) * rho_I / static_cast<dfloat>(125);
 
         *rhoVar = rho;
         *ux = static_cast<dfloat>(0);
@@ -36,7 +36,7 @@ __device__ inline void apply_boundaries(
     {
         const dfloat rho_I = pop[0] + pop[2] + pop[4] + pop[5] + pop[8] + pop[16] + pop[18] + pop[22];
 
-        const dfloat rho = static_cast<dfloat>(12) * rho_I / static_cast<dfloat>(7);
+        const dfloat rho = static_cast<dfloat>(216) * rho_I / static_cast<dfloat>(125);
 
         *rhoVar = rho;
         *ux = static_cast<dfloat>(0);
@@ -55,7 +55,7 @@ __device__ inline void apply_boundaries(
     {
         const dfloat rho_I = pop[0] + pop[1] + pop[4] + pop[6] + pop[12] + pop[13] + pop[15] + pop[26];
 
-        const dfloat rho = static_cast<dfloat>(12) * rho_I / static_cast<dfloat>(7);
+        const dfloat rho = static_cast<dfloat>(216) * rho_I / static_cast<dfloat>(125);
 
         *rhoVar = rho;
         *ux = static_cast<dfloat>(0);
@@ -74,7 +74,7 @@ __device__ inline void apply_boundaries(
     {
         const dfloat rho_I = pop[0] + pop[1] + pop[4] + pop[5] + pop[9] + pop[13] + pop[18] + pop[23];
 
-        const dfloat rho = static_cast<dfloat>(12) * rho_I / static_cast<dfloat>(7);
+        const dfloat rho = static_cast<dfloat>(216) * rho_I / static_cast<dfloat>(125);
 
         *rhoVar = rho;
         *ux = static_cast<dfloat>(0);

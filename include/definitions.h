@@ -36,12 +36,15 @@ static_assert(BLOCK_NX * BLOCK_NY * BLOCK_NZ <= 1024, "CUDA block cannot exceed 
 constexpr int AB_TILE_NX = 8;
 constexpr int AB_TILE_NY = 8;
 constexpr int AB_TILE_NZ = 4;
+static_assert(NX % AB_TILE_NX == 0 && NY % AB_TILE_NY == 0 && NZ % AB_TILE_NZ == 0, "Local dimensions must be multiples of the AB tile");
 
 constexpr size_t BLOCK_LBM_SIZE = BLOCK_NX * BLOCK_NY * BLOCK_NZ;
 
 constexpr size_t NUM_BLOCK_X = (NX + BLOCK_NX - 1) / BLOCK_NX;
 constexpr size_t NUM_BLOCK_Y = (NY + BLOCK_NY - 1) / BLOCK_NY;
 constexpr size_t NUM_BLOCK_Z = (NZ + BLOCK_NZ - 1) / BLOCK_NZ;
+
+static_assert(NUM_GPUS == 1 || NUM_BLOCK_Z >= 3, "Two GPUs require at least three CUDA blocks along Z");
 
 constexpr size_t NUM_BLOCK = NUM_BLOCK_X * NUM_BLOCK_Y * NUM_BLOCK_Z;
 

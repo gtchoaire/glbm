@@ -6,7 +6,7 @@ set -euo pipefail
 export LC_ALL=C
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-case_file="${GLBM_CASE_FILE:-${project_dir}/case.toml}"
+case_file="${GLBM_CASE_FILE:-${project_dir}/run/case.toml}"
 gpu_index="${GLBM_GPU_INDEX:-0}"
 tuning_steps="${GLBM_AUTOTUNE_STEPS:-3000}"
 repetitions="${GLBM_AUTOTUNE_REPETITIONS:-2}"
@@ -21,7 +21,7 @@ usage() {
         "Usage: $0 [--tune-only] [--retune]" \
         "" \
         "Environment variables:" \
-        "  GLBM_CASE_FILE             Case file (default: case.toml)" \
+        "  GLBM_CASE_FILE             Case file (default: run/case.toml)" \
         "  GLBM_GPU_INDEX             Physical GPU index (default: 0)" \
         "  GLBM_AUTOTUNE_STEPS        Steps per measurement (default: 3000)" \
         "  GLBM_AUTOTUNE_REPETITIONS  Measurements per candidate (default: 2)" \
@@ -82,8 +82,8 @@ sar="$(read_case_value aspect_ratio)"
 num_gpus="$(read_case_value num_gpus)"
 precision="$(read_case_value precision)"
 reynolds="$(read_case_value reynolds_number)"
-nz=$((nx * sar / num_gpus))
-global_nz=$((nx * sar))
+global_nz="$(awk -v n="${nx}" -v sar="${sar}" 'BEGIN {printf "%d", n * sar}')"
+nz=$((global_nz / num_gpus))
 
 visible_devices=""
 for ((device_offset=0; device_offset<num_gpus; ++device_offset)); do
@@ -191,6 +191,8 @@ else
             -DLBM_SIMULATION_STEPS_OVERRIDE="${tuning_steps}" \
             -DLBM_PRINT_INTERVAL_OVERRIDE="${tuning_steps}" \
             -DLBM_CHECKPOINT_INTERVAL_OVERRIDE=0 \
+            -DLBM_STATISTICS_ENABLED_OVERRIDE=false \
+            -DLBM_BMBC_ENABLED_OVERRIDE=false \
             -DLBM_SAVE_VTI_OVERRIDE=false \
             -DLBM_SAVE_BINARY_OVERRIDE=false \
             -DLBM_SAVE_KINETIC_ENERGY_OVERRIDE=false \
@@ -210,7 +212,7 @@ else
         run_values=""
         run_status="ok"
         for ((run=1; run<=repetitions; ++run)); do
-            if ! output="$(CUDA_VISIBLE_DEVICES="${visible_devices}" "${candidate_build}/glbm" 2>&1)"; then
+            if ! output="$(cd "${candidate_build}" && CUDA_VISIBLE_DEVICES="${visible_devices}" ./glbm 2>&1)"; then
                 printf 'Candidate %s failed during run %s.\n%s\n' \
                     "${candidate}" "${run}" "${output}" >&2
                 run_status="run_failed"

@@ -6,29 +6,19 @@
 
 #include "bmbc.cuh"
 
-// Decomposition-independent BMBC sidecar accompanies a .glbm checkpoint.
-// Example: checkpoint.glbm -> checkpoint.glbm.bmbc
-// Call on the device owning the BMBC buffers, once the sampling stream is synchronized.
-void writeBMBCSnapshot(
+std::filesystem::path writeBMBCSnapshot(
     const BMBCProfiles &monitor,
     std::size_t completed_step,
-    const std::filesystem::path &glbm_checkpoint_file);
+    std::size_t start_step,
+    std::size_t sample_interval,
+    const std::filesystem::path &statistics_directory);
 
-// Requires a monitor allocated with the same block_samples as the snapshot.
-// Validates checkpoint step and total samples. Does not touch the solver state.
 void restoreBMBCSnapshot(
     BMBCProfiles &monitor,
     std::size_t expected_step,
     std::size_t expected_samples,
-    const std::filesystem::path &glbm_checkpoint_file);
-
-// Runs the existing GPU BMBC statistics for powers-of-two groupings,
-// then exports ALL points of ux(y) and uy(x) to a single CSV.
-// Output: output_directory/bmbc_profiles_step_<step>.csv
-void exportBMBCProfilesCSV(
-    BMBCProfiles &monitor,
-    std::size_t completed_step,
-    std::size_t sample_interval,
-    const std::filesystem::path &output_directory);
+    std::size_t expected_start_step,
+    std::size_t expected_sample_interval,
+    const std::filesystem::path &statistics_directory);
 
 #endif

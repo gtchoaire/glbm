@@ -5,37 +5,41 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"
 build_dir="$repo_dir/build-re3200-turbulence-256-pilot"
 config="$repo_dir/cases/re3200_turbulence_profiles_256_pilot.toml"
+run_dir="$repo_dir/run-re3200-turbulence-256-pilot"
 restart_path="${1:-}"
+
+mkdir -p "$run_dir"
+cp "$config" "$run_dir/case.toml"
 
 cmake -S "$repo_dir" -B "$build_dir" \
     -DCMAKE_CUDA_ARCHITECTURES=89 \
-    -DLBM_CONFIG_FILE="$config" \
+    -DLBM_CONFIG_FILE="$run_dir/case.toml" \
     -DLBM_NUM_GPUS_OVERRIDE=2 \
     -DLBM_RESTART_PATH_OVERRIDE="$restart_path"
 cmake --build "$build_dir" --target glbm -j"$(nproc)"
+cp "$build_dir/glbm" "$run_dir/glbm"
 
 (
-    cd -- "$build_dir"
+    cd -- "$run_dir"
     ./glbm 2>&1 | tee -a pilot_run.log
 )
 
-run_dir="$(find "$build_dir/output" -mindepth 1 -maxdepth 1 -type d \
-    -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
-csv="$(find "$run_dir" -maxdepth 1 -type f -name 'bmbc_profiles_step_*.csv' \
-    -printf '%f\n' | sort -V | tail -n 1)"
-snapshot="$run_dir/checkpoint_re3200_turbulence_256_pilot.glbm.bmbc"
+statistics="$run_dir/statistics"
+snapshot="$statistics/bmbc_blocks.bin"
 
-if [[ -z "$csv" || ! -f "$snapshot" ]]; then
+if [[ ! -f "$snapshot" ]]; then
     echo "Simulation completed, but final BMBC outputs were not found." >&2
     exit 1
 fi
 
-MPLCONFIGDIR=/tmp/glbm-matplotlib python3 \
-    "$repo_dir/post/analyze_turbulence_profiles.py" \
-    "$run_dir/$csv" --snapshot "$snapshot"
+(
+    cd -- "$run_dir"
+    python3 "$repo_dir/post/process_statistics.py"
+    MPLCONFIGDIR=/tmp/glbm-matplotlib python3 "$repo_dir/post/plot_statistics.py"
+)
 
 echo
 echo "Pilot completed. Run directory: $run_dir"
 echo "Send only these two small files for review:"
-echo "  $run_dir/${csv%.csv}_turbulence_analysis/experimental_comparison_summary.csv"
-echo "  $run_dir/${csv%.csv}_turbulence_analysis/turbulence_bmbc_summary.csv"
+echo "  $statistics/derived/data/experiment_summary.dat"
+echo "  $statistics/derived/data/line_statistics.dat"

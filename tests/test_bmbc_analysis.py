@@ -1,5 +1,6 @@
 import csv
 import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,8 +8,10 @@ from pathlib import Path
 import numpy as np
 
 
-MODULE_PATH = Path(__file__).parents[1] / "post" / "analyze_bmbc_profiles.py"
-SPEC = importlib.util.spec_from_file_location("analyze_bmbc_profiles", MODULE_PATH)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "post"))
+MODULE_PATH = ROOT / "post" / "process_statistics.py"
+SPEC = importlib.util.spec_from_file_location("process_statistics", MODULE_PATH)
 ANALYSIS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ANALYSIS)
 
@@ -35,10 +38,10 @@ class BMBCAnalysisTest(unittest.TestCase):
                     writer.writerows(rows)
 
             _, ux_position, ux_velocity = ANALYSIS.load_reference(
-                root, "ux_y", 3200, 1
+                root, "ux_cy", 3200, 1, "y"
             )
             _, uy_position, uy_velocity = ANALYSIS.load_reference(
-                root, "uy_x", 3200, 1
+                root, "uy_cx", 3200, 1, "x"
             )
             np.testing.assert_allclose(ux_position, [-1.0, 1.0])
             np.testing.assert_allclose(ux_velocity, [-0.2, 0.8])

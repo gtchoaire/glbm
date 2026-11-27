@@ -7,8 +7,8 @@
 #include "globalStructs.cuh"
 
 // States must be ordered by increasing global Z subdomain.
-bool createOutputDirectory(std::filesystem::path &output_directory);
-bool writeSimulationInfo(const std::filesystem::path &output_directory);
+bool prepareRunDirectory(std::filesystem::path &run_directory);
+bool writeSimulationMetadata(const std::filesystem::path &statistics_directory);
 bool writeVti(const std::vector<LBMState *> &states, int step,
               const std::filesystem::path &output_directory);
 // Writes raw physical fields in global z-y-x order, without a file header.

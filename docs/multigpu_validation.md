@@ -18,16 +18,17 @@ Comparing the one- and two-GPU executions:
 
 - all four final macroscopic fields are bitwise identical;
 - total kinetic energy output is bitwise identical;
-- the canonical checkpoint payload (10 solver moments and 10 temporal-average
-  fields) is bitwise identical;
+- the canonical checkpoint payload contains only the 10 solver moments and is
+  bitwise identical;
+- the independent local field statistics contain 16 float64 temporal means;
 - after 64 complete BMBC blocks, the maximum differences are
   `1.73e-18` in the reported mean and `2.96e-21` in the variance;
 - cross-decomposition restart succeeds in both directions (one to two GPUs
   and two to one GPU), and the continued solver/checkpoint state remains
   bitwise identical.
 
-The BMBC sidecar now records global dimensions, so its metadata no longer
-depends on whether the checkpoint was written by one or two GPUs.
+The BMBC block file records global dimensions, so its metadata does not depend
+on whether the run uses one or two GPUs.
 
 ## Solver-only strong scaling
 
@@ -83,7 +84,7 @@ cmake --build build-mgpu-validation-1 --target cuda_topology_probe
 
 ## Next validation stage
 
-Profile BMBC sampling and the ten volumetric temporal averages now have
+Profile BMBC sampling and the local field statistics have
 independent intervals. The four 256-cubed cases prefixed with
 `multigpu_stats_256_` isolate solver, profile, volumetric and combined costs.
 Run all four on two GPUs with:
@@ -106,10 +107,9 @@ volumetric statistics every 16 steps:
 |---|---:|---:|---:|
 | Solver | 10937 | 9844 | baseline |
 | BMBC profiles | 10208 | 9560 | 2.9% |
-| 10 volumetric means | 9069 | 8888 | 9.7% |
+| 10 local field means | 9069 | 8888 | 9.7% |
 | Combined | 9186 | 8939 | 9.2% |
 
 The small difference between volumetric and combined results is within the
-variation of one short execution. The important result is that central-line
-profiles are inexpensive, while the ten double-precision volumetric updates
-dominate the statistics overhead.
+variation of one short execution. These historical values predate the current
+16-field layout and should not be used as its final performance measurement.

@@ -1,104 +1,51 @@
-# BMBC and mean-profile validation
+# BMBC uncertainty
 
-The temporal accumulator and BMBC answer different questions:
+Implementation of S. Russo and P. Luchini, *A fast algorithm for the estimation
+of statistical error in DNS (or experimental) time averages*, JCP 347 (2017)
+328-340, https://doi.org/10.1016/j.jcp.2017.07.005. Equation numbers refer to
+that paper.
 
-- `TemporalAverages` updates the ten stored mean fields with the recurrent
-  formula `mean += (sample - mean) / n`. The accumulators are always float64,
-  even when the LBM state is float32, to prevent long-window stagnation.
-- BMBC stores non-overlapping means only for the two validation centerlines and
-  estimates the sampling variance of those means.
-- The Prasad-Koseff comparison measures validation error, which also includes
-  spatial discretization, modeling, boundary-condition, and experimental
-  differences.
+The solver stores the means `X_k` of non-overlapping blocks of the 16 local
+fields on the two centerlines, including the partial block, in
+`statistics/bmbc_blocks.bin`.
 
-The implemented finite-sample estimator is
-
-```
-variance(mean) = (S0 + 2 S1) / ((K - 1) (K - 2))
-S0 = sum_k (Xbar_k^2 - mean^2)
-S1 = sum_k (Xbar_k Xbar_{k+1} - mean^2)
+```text
+mean = (1/N) sum_n X_n,  N = M K                            (1)
+X_k = mean of batch k,  x_k = X_k - mean                    (29)
+variance(mean) = (S0 + 2 S1) / ((K - 1) (K - 2))            (30)
+S0 = sum_{k=1..K} x_k^2                                     (31)
+S1 = sum_{k=1..K-1} x_k x_{k+1}                             (32)
 ```
 
-Following Russo and Luchini (2017), the post-processing selects, separately
-for each profile, the available batch size whose spatial median is closest to
-`S1/S0 = 0.5`. A single batch size cannot generally meet this condition at
-every spatial point, so the CSV retains the full pointwise diagnostics.
+Equation (32) also prints `S1` as `sum (X_k X_{k+1} - mean^2)`. The two forms
+differ by `-mean (x_1 + x_K)`; only the one above equals the correlation matrix
+of centered terms in (28), which defines the estimator. The test suite checks
+the implementation against that matrix.
 
-Checkpoints v4 store `stats_precision float64`; the physical LBM state keeps
-the configured solver precision. The loader and Python extractor remain
-compatible with v3 checkpoints.
+The batch size `M` is the smallest one with `S1/S0 <= 0.5` (Section 5.2 and
+Fig. 3), selected separately for every scalar series. It is scanned over the
+multiples of the stored block that divide the number of blocks, so `N = M K`
+holds exactly. Incomplete histories are first truncated to a multiple of 60
+blocks, and the reported mean uses the same truncated samples. If no `M` with
+at least three batches satisfies the limit, the uncertainty is `nan`, as it is
+for a negative variance. An identically constant series has zero variance.
 
-Reference: S. Russo and P. Luchini, *A fast algorithm for the estimation of
-statistical error in DNS (or experimental) time averages*, JCP 347 (2017),
-https://doi.org/10.1016/j.jcp.2017.07.005.
+The normal distribution of the error gives the 95% interval
+`mean +- 1.96 sqrt(variance)`.
 
-The production cases use a transient of `120 t*`, followed by a `100 t*`
-sampling window. They are intentionally separate so Re=3200 can be assessed
-before committing the GPU time to Re=10000.
+Every uncertainty is that of a plain ensemble average. For the Reynolds
+stresses and the turbulent dissipation the averaged variables are
 
-For the longer one-GPU experiment, `re3200_long_mean_profiles.toml` uses the
-same `120 t*` transient followed by `600 t*` of averaging. The ten float64
-fields are sampled every eight solver steps to avoid making the statistics
-kernel the dominant cost. A basic BMBC block has 128 sampled states, preserving
-the previous physical length of 1024 solver steps. BMBC console reports occur
-every 256 basic blocks and full profile CSVs every 512 blocks (about `105.7 t*`
-between profile exports). Experimental L2 is never evaluated inside the solver
-loop; it is computed offline from these CSVs.
-
-```bash
-cmake -S . -B build-re3200 \
-  -DLBM_CONFIG_FILE="$PWD/cases/re3200_mean_profiles.toml"
-cmake --build build-re3200 -j
-ctest --test-dir build-re3200 --output-on-failure
-./build-re3200/glbm
-
-python post/verify_bmbc_averages.py \
-  build-re3200/output/<run>/checkpoint_re3200_mean_profiles.glbm
-
-python post/analyze_bmbc_profiles.py \
-  build-re3200/output/<run>/bmbc_profiles_step_1091407.csv \
-  --halfwidth-tol-over-u 0.01
+```text
+X = u'_i u'_j = (u_i - <u_i>)(u_j - <u_j>)
+X = 2 nu s_ij s_ij,  s_ij = S_ij - <S_ij>
 ```
 
-Long run from the initial condition:
+whose block means follow exactly from the stored block means, for example
+`X_k = <u_i u_j>_k - <u_i><u_j>_k - <u_j><u_i>_k + <u_i><u_j>`. The intervals
+of the RMS velocities and of the Kolmogorov scale are the images of the
+intervals of `r_ii` and of the dissipation, both monotonic functions.
 
-```bash
-cmake -S . -B build-re3200-long \
-  -DLBM_CONFIG_FILE="$PWD/cases/re3200_long_mean_profiles.toml"
-cmake --build build-re3200-long -j
-./build-re3200-long/glbm
-```
-
-After completion, analyze the evolution of L2 and BMBC uncertainty across all
-periodic profile exports:
-
-```bash
-python post/analyze_bmbc_sequence.py \
-  build-re3200-long/output/<run-directory>
-```
-
-The reported relative L2 error is evaluated at the irregular experimental
-coordinates after linear interpolation of the numerical profile:
-
-```
-relative_L2 = sqrt(integral(error^2 ds) / integral(reference^2 ds))
-```
-
-Use the BMBC half-width and its stability across batch sizes to decide whether
-more samples are needed. Use the experimental L2 to compare grids, Reynolds
-numbers, and numerical choices; do not use it alone as a stopping rule for the
-time average.
-
-If the first `100 t*` window is insufficient, it can be continued without
-discarding samples. The new end must extend the stored end, and the restart
-must occur before any unsampled gap. The extension case reuses the checkpoint
-filename, so completed checkpoints are replaced atomically instead of
-accumulating large files on disk:
-
-```bash
-cmake -S . -B build-re3200-extended \
-  -DLBM_CONFIG_FILE="$PWD/cases/re3200_extend_mean_profiles.toml" \
-  -DLBM_RESTART_PATH_OVERRIDE="$PWD/build-re3200/output/<run>/checkpoint_re3200_mean_profiles.glbm"
-cmake --build build-re3200-extended -j
-./build-re3200-extended/glbm
-```
+BMBC measures sampling uncertainty only; comparisons with Prasad and Koseff
+also contain discretization, model, boundary-condition and experimental
+differences.

@@ -37,8 +37,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-set(LBM_CONFIG_FILE "${CMAKE_SOURCE_DIR}/case.toml" CACHE FILEPATH
+set(LBM_CONFIG_FILE "${CMAKE_SOURCE_DIR}/run/case.toml" CACHE FILEPATH
     "Simulation configuration file")
+get_filename_component(LBM_CONFIG_FILE "${LBM_CONFIG_FILE}" ABSOLUTE)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${LBM_CONFIG_FILE}")
 
@@ -94,22 +95,10 @@ read_config(sample_interval STATISTICS_SAMPLE_INTERVAL)
 # BMBC configuration
 read_config(bmbc_enabled BMBC_ENABLED)
 read_config(bmbc_sample_interval BMBC_SAMPLE_INTERVAL)
-read_config(bmbc_turbulence_profiles BMBC_TURBULENCE_PROFILES)
 
-if(BMBC_ENABLED)
-    set(BMBC_ENABLED 1)
-else()
-    set(BMBC_ENABLED 0)
-endif()
-if(BMBC_TURBULENCE_PROFILES)
-    set(BMBC_TURBULENCE_PROFILES 1)
-else()
-    set(BMBC_TURBULENCE_PROFILES 0)
-endif()
 read_config(bmbc_block_samples BMBC_BLOCK_SAMPLES)
 read_config(bmbc_initial_capacity_blocks BMBC_INITIAL_CAPACITY_BLOCKS)
 read_config(bmbc_report_interval_blocks BMBC_REPORT_INTERVAL_BLOCKS)
-read_config(bmbc_export_interval_blocks BMBC_EXPORT_INTERVAL_BLOCKS)
 
 foreach(variable BMBC_SAMPLE_INTERVAL BMBC_BLOCK_SAMPLES BMBC_INITIAL_CAPACITY_BLOCKS)
     if(NOT "${${variable}}" MATCHES "^[1-9][0-9]*$")
@@ -117,18 +106,11 @@ foreach(variable BMBC_SAMPLE_INTERVAL BMBC_BLOCK_SAMPLES BMBC_INITIAL_CAPACITY_B
     endif()
 endforeach()
 
-foreach(variable BMBC_REPORT_INTERVAL_BLOCKS BMBC_EXPORT_INTERVAL_BLOCKS)
+foreach(variable BMBC_REPORT_INTERVAL_BLOCKS)
     if(NOT "${${variable}}" MATCHES "^[0-9]+$")
         message(FATAL_ERROR "${variable} must be a non-negative integer")
     endif()
 endforeach()
-
-
-if(STATISTICS_ENABLED)
-    set(STATISTICS_ENABLED 1)
-else()
-    set(STATISTICS_ENABLED 0)
-endif()
 
 if(NOT STATISTICS_SAMPLE_INTERVAL MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR
@@ -138,9 +120,18 @@ endif()
 foreach(variable
         NUM_GPUS SIMULATION_STEPS PRINT_INTERVAL
         BLOCK_X BLOCK_Y BLOCK_Z SAVE_VTI SAVE_BINARY SAVE_KINETIC_ENERGY
-        KINETIC_ENERGY_INTERVAL CHECKPOINT_INTERVAL CHECKPOINT_PATH RESTART_PATH)
+        KINETIC_ENERGY_INTERVAL CHECKPOINT_INTERVAL CHECKPOINT_PATH RESTART_PATH
+        STATISTICS_ENABLED BMBC_ENABLED)
     if(DEFINED LBM_${variable}_OVERRIDE)
         set(${variable} "${LBM_${variable}_OVERRIDE}")
+    endif()
+endforeach()
+
+foreach(variable STATISTICS_ENABLED BMBC_ENABLED)
+    if(${variable})
+        set(${variable} 1)
+    else()
+        set(${variable} 0)
     endif()
 endforeach()
 
@@ -176,7 +167,8 @@ set(GLBM_CORE_SOURCES
     src/mlbm.cu
     src/multiGpu.cu
     src/nodeType.cu
-    src/temporalAverages.cu
+    src/localFieldStatistics.cu
+    src/localFieldStatisticsIO.cu
     src/bmbc.cu
     src/bmbcIO.cu
 )
@@ -215,7 +207,6 @@ foreach(target IN LISTS GLBM_COMPILE_TARGETS)
         BLOCK_NX_VALUE=${BLOCK_X}
         BLOCK_NY_VALUE=${BLOCK_Y}
         BLOCK_NZ_VALUE=${BLOCK_Z}
-        BMBC_TURBULENCE_PROFILES_VALUE=${BMBC_TURBULENCE_PROFILES}
     )
     if(PRECISION STREQUAL "double")
         target_compile_definitions(${target} PRIVATE double_precision)
@@ -246,7 +237,6 @@ target_compile_definitions(glbm_simulation PRIVATE
     BMBC_SAMPLE_INTERVAL_VALUE=${BMBC_SAMPLE_INTERVAL}
     BMBC_INITIAL_CAPACITY_BLOCKS_VALUE=${BMBC_INITIAL_CAPACITY_BLOCKS}
     BMBC_REPORT_INTERVAL_BLOCKS_VALUE=${BMBC_REPORT_INTERVAL_BLOCKS}
-    BMBC_EXPORT_INTERVAL_BLOCKS_VALUE=${BMBC_EXPORT_INTERVAL_BLOCKS}
     BMBC_ENABLED_VALUE=${BMBC_ENABLED}
 )
 
@@ -255,6 +245,14 @@ target_compile_definitions(glbm_output PRIVATE
     SAVE_KINETIC_ENERGY_OUTPUT_VALUE=${SAVE_KINETIC_ENERGY}
     KINETIC_ENERGY_OUTPUT_INTERVAL=${KINETIC_ENERGY_INTERVAL}
     CHECKPOINT_PATH_VALUE=\"${CHECKPOINT_PATH}\"
+    STATISTICS_ENABLED_VALUE=${STATISTICS_ENABLED}
+    STATISTICS_START_T_STAR_VALUE=${STATISTICS_START_T_STAR}
+    STATISTICS_END_T_STAR_VALUE=${STATISTICS_END_T_STAR}
+    STATISTICS_SAMPLE_INTERVAL_VALUE=${STATISTICS_SAMPLE_INTERVAL}
+    BMBC_ENABLED_VALUE=${BMBC_ENABLED}
+    BMBC_SAMPLE_INTERVAL_VALUE=${BMBC_SAMPLE_INTERVAL}
+    BMBC_BLOCK_SAMPLES_VALUE=${BMBC_BLOCK_SAMPLES}
+    CHECKPOINT_INTERVAL_VALUE=${CHECKPOINT_INTERVAL}
 )
 
 set_target_properties(glbm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -281,7 +279,6 @@ if(BUILD_TESTING)
         BLOCK_NX_VALUE=${BLOCK_X}
         BLOCK_NY_VALUE=${BLOCK_Y}
         BLOCK_NZ_VALUE=${BLOCK_Z}
-        BMBC_TURBULENCE_PROFILES_VALUE=${BMBC_TURBULENCE_PROFILES}
     )
     if(PRECISION STREQUAL "double")
         target_compile_definitions(bmbc_statistics_test PRIVATE double_precision)

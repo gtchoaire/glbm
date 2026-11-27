@@ -1,198 +1,65 @@
 #include "../include/bmbc.cuh"
 #include "../include/globalFunctions.cuh"
 
-#include <limits>
-#include <stdexcept>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
-
-#include PROPERTIES
+#include <limits>
+#include <numeric>
+#include <stdexcept>
 
 namespace
 {
-    __device__ __forceinline__ std::size_t scalarIndex3D(
-        const int x, const int y, const int z)
-    {
-        return idxScalarBlock(
-            x % BLOCK_NX, y % BLOCK_NY, z % BLOCK_NZ,
-            x / BLOCK_NX, y / BLOCK_NY, z / BLOCK_NZ);
-    }
-
-    __device__ __forceinline__ double physicalVelocity(
-        const LBMState &state, const int component,
-        const int x, const int y, const int z)
-    {
-        return static_cast<double>(
-                   state.device(component, scalarIndex3D(x, y, z))) /
-               static_cast<double>(F_M_I_SCALE);
-    }
-
-    __device__ __forceinline__ double yProfileMoment(
-        const int field, const double ux, const double uy)
-    {
-        if (field == 0) return ux;
-        if (field == 1) return uy;
-        if (field == 2) return ux * ux;
-        return ux * uy;
-    }
-
-    __device__ __forceinline__ double xProfileMoment(
-        const int field, const double ux, const double uy)
-    {
-        if (field == 0) return ux;
-        if (field == 1) return uy;
-        if (field == 2) return uy * uy;
-        return ux * uy;
-    }
+    constexpr std::size_t BMBC_BLOCK_MULTIPLE = 60;
+    constexpr double BMBC_CORRELATION_LIMIT = 0.5;
 
     __global__ void gpuAccumulateBMBCProfiles(
-        const LBMState state, double *batch_sum)
+        const LBMState state, const int global_z_start, double *sum)
     {
-        const std::size_t p =
+        std::size_t index =
             static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-        if (p >= BMBC_PROFILE_POINTS)
+        if (index >= BMBC_LINE_NODES)
             return;
 
-        // For odd sizes, the lower and upper center indices are identical.
-        const int x0 = (NX - 1) / 2;
-        const int x1 = NX / 2;
-        const int y0 = (NY - 1) / 2;
-        const int y1 = NY / 2;
-        const int z0 = (NZ - 1) / 2;
-        const int z1 = NZ / 2;
+        int line = 0;
+        while (index >= bmbcLineSize(line))
+            index -= bmbcLineSize(line++);
 
-        double value = 0.0;
-        if constexpr (BMBC_TURBULENCE_PROFILES)
-        {
-            const std::size_t y_values = 4 * static_cast<std::size_t>(NY);
-            if (p < y_values)
-            {
-                const int field = static_cast<int>(p / NY);
-                const int y = static_cast<int>(p % NY);
-                const int xs[2]{x0, x1};
-                const int zs[2]{z0, z1};
-                for (int iz = 0; iz < 2; ++iz)
-                    for (int ix = 0; ix < 2; ++ix)
-                    {
-                        const double ux = physicalVelocity(
-                            state, M_UX_INDEX, xs[ix], y, zs[iz]);
-                        const double uy = physicalVelocity(
-                            state, M_UY_INDEX, xs[ix], y, zs[iz]);
-                        value += 0.25 * yProfileMoment(field, ux, uy);
-                    }
-            }
-            else
-            {
-                const std::size_t local = p - y_values;
-                const int field = static_cast<int>(local / NX);
-                const int x = static_cast<int>(local % NX);
-                const int ys[2]{y0, y1};
-                const int zs[2]{z0, z1};
-                for (int iz = 0; iz < 2; ++iz)
-                    for (int iy = 0; iy < 2; ++iy)
-                    {
-                        const double ux = physicalVelocity(
-                            state, M_UX_INDEX, x, ys[iy], zs[iz]);
-                        const double uy = physicalVelocity(
-                            state, M_UY_INDEX, x, ys[iy], zs[iz]);
-                        value += 0.25 * xProfileMoment(field, ux, uy);
-                    }
-            }
-        }
-        else
-        {
-            if (p < static_cast<std::size_t>(NY))
-            {
-                const int y = static_cast<int>(p);
-                value = 0.25 * (physicalVelocity(state, M_UX_INDEX, x0, y, z0) +
-                                physicalVelocity(state, M_UX_INDEX, x1, y, z0) +
-                                physicalVelocity(state, M_UX_INDEX, x0, y, z1) +
-                                physicalVelocity(state, M_UX_INDEX, x1, y, z1));
-            }
-            else
-            {
-                const int x = static_cast<int>(p - NY);
-                value = 0.25 * (physicalVelocity(state, M_UY_INDEX, x, y0, z0) +
-                                physicalVelocity(state, M_UY_INDEX, x, y1, z0) +
-                                physicalVelocity(state, M_UY_INDEX, x, y0, z1) +
-                                physicalVelocity(state, M_UY_INDEX, x, y1, z1));
-            }
-        }
+        const bool along_x = line == BMBC_X_CENTER;
+        double values[NUM_LOCAL_FIELDS];
 
-        // One thread writes each point; no atomics are needed.
-        batch_sum[p] += value;
+        for (int corner = 0; corner < 4; ++corner)
+        {
+            const int first = corner & 1;
+            const int second = corner >> 1;
+            const int x = along_x ? static_cast<int>(index) : (GLOBAL_NX - 1 + first) / 2;
+            const int y = along_x ? (GLOBAL_NY - 1 + first) / 2 : static_cast<int>(index);
+            const int z = (GLOBAL_NZ - 1 + second) / 2;
+            const int local_z = z - global_z_start;
+            if (local_z < 0 || local_z >= NZ)
+                continue;
+
+            evaluateLocalFields(
+                state,
+                idxScalarBlock(
+                    x % BLOCK_NX, y % BLOCK_NY, local_z % BLOCK_NZ,
+                    x / BLOCK_NX, y / BLOCK_NY, local_z / BLOCK_NZ),
+                values);
+            for (int field = 0; field < NUM_LOCAL_FIELDS; ++field)
+                sum[bmbcPoint(line, field, index)] += 0.25 * values[field];
+        }
     }
 
-    // For a two-way Z decomposition of an even-sized global domain, the
-    // two geometric-center planes belong to different devices. Each GPU
-    // accumulates HALF of the interpolated central profile. Adding both
-    // partial sums later recovers the full instantaneous-profile sum.
-    __global__ void gpuAccumulateBMBCLocalProfile(
-        const LBMState state, const int local_center_z, double *partial_sum)
+    void launchBMBCAccumulation(
+        const LBMState &state, const SubDomainInfo &info,
+        double *sum, const cudaStream_t stream)
     {
-        const std::size_t p =
-            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-        if (p >= BMBC_PROFILE_POINTS)
-            return;
-
-        const int x0 = (GLOBAL_NX - 1) / 2;
-        const int x1 = GLOBAL_NX / 2;
-        const int y0 = (GLOBAL_NY - 1) / 2;
-        const int y1 = GLOBAL_NY / 2;
-        double contribution = 0.0;
-
-        if constexpr (BMBC_TURBULENCE_PROFILES)
-        {
-            const std::size_t y_values =
-                4 * static_cast<std::size_t>(GLOBAL_NY);
-            if (p < y_values)
-            {
-                const int field = static_cast<int>(p / GLOBAL_NY);
-                const int y = static_cast<int>(p % GLOBAL_NY);
-                const int xs[2]{x0, x1};
-                for (int ix = 0; ix < 2; ++ix)
-                {
-                    const double ux = physicalVelocity(
-                        state, M_UX_INDEX, xs[ix], y, local_center_z);
-                    const double uy = physicalVelocity(
-                        state, M_UY_INDEX, xs[ix], y, local_center_z);
-                    contribution += 0.25 * yProfileMoment(field, ux, uy);
-                }
-            }
-            else
-            {
-                const std::size_t local = p - y_values;
-                const int field = static_cast<int>(local / GLOBAL_NX);
-                const int x = static_cast<int>(local % GLOBAL_NX);
-                const int ys[2]{y0, y1};
-                for (int iy = 0; iy < 2; ++iy)
-                {
-                    const double ux = physicalVelocity(
-                        state, M_UX_INDEX, x, ys[iy], local_center_z);
-                    const double uy = physicalVelocity(
-                        state, M_UY_INDEX, x, ys[iy], local_center_z);
-                    contribution += 0.25 * xProfileMoment(field, ux, uy);
-                }
-            }
-        }
-        else
-        {
-            if (p < static_cast<std::size_t>(GLOBAL_NY))
-            {
-                const int y = static_cast<int>(p);
-                contribution = 0.25 * (
-                    physicalVelocity(state, M_UX_INDEX, x0, y, local_center_z) +
-                    physicalVelocity(state, M_UX_INDEX, x1, y, local_center_z));
-            }
-            else
-            {
-                const int x = static_cast<int>(p - GLOBAL_NY);
-                contribution = 0.25 * (
-                    physicalVelocity(state, M_UY_INDEX, x, y0, local_center_z) +
-                    physicalVelocity(state, M_UY_INDEX, x, y1, local_center_z));
-            }
-        }
-
-        partial_sum[p] += contribution;
+        constexpr int threads = 256;
+        const unsigned int blocks = static_cast<unsigned int>(
+            (BMBC_LINE_NODES + threads - 1) / threads);
+        gpuAccumulateBMBCProfiles<<<blocks, threads, 0, stream>>>(
+            state, info.global_z_start, sum);
+        checkCuda(cudaGetLastError());
     }
 
     __global__ void gpuMergeBMBCLocalProfiles(
@@ -219,79 +86,6 @@ namespace
             batch_sum[p] * inverse_block_samples;
         batch_sum[p] = 0.0;
     }
-    // One thread handles an entire time series at one profile point.
-    // All quantities are accumulated in double precision.
-
-    __global__ void gpuComputeBMBCStatistics(
-        const double *batch_means,
-        const std::size_t completed_blocks,
-        const std::size_t group_size,
-        double *statistics)
-    {
-        const std::size_t p =
-            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-
-        if (p >= BMBC_PROFILE_POINTS)
-            return;
-
-        const std::size_t stride = BMBC_PROFILE_POINTS;
-        const std::size_t K = completed_blocks / group_size;
-
-        // Mean of one group of consecutive basic blocks.
-        // Every basic block contains the same number of samples.
-        auto groupedMean = [&](const std::size_t group)
-        {
-            double sum = 0.0;
-
-            for (std::size_t j = 0; j < group_size; ++j)
-            {
-                const std::size_t k = group * group_size + j;
-                sum += batch_means[k * stride + p];
-            }
-
-            return sum / static_cast<double>(group_size);
-        };
-
-        // Mean of all complete groups.
-        double sum = 0.0;
-
-        for (std::size_t k = 0; k < K; ++k)
-            sum += groupedMean(k);
-
-        const double mean = sum / static_cast<double>(K);
-
-        // BMBC terms.
-        double s0 = 0.0;
-        double s1 = 0.0;
-        double previous = 0.0;
-
-        for (std::size_t k = 0; k < K; ++k)
-        {
-            const double value = groupedMean(k);
-            const double centered = value - mean;
-
-            s0 += centered * centered;
-
-            // Russo & Luchini's finite-sample BMBC correction is
-            // sum(X_k X_{k+1} - mean^2), not the usual centered lag-one
-            // covariance.  Those expressions differ by an endpoint term
-            // for a finite series.
-            if (k > 0)
-                s1 += previous * value - mean * mean;
-
-            previous = value;
-        }
-
-        const double n = static_cast<double>(K);
-
-        const double variance =
-            (s0 + 2.0 * s1) / ((n - 1.0) * (n - 2.0));
-
-        statistics[BMBC_STAT_MEAN * stride + p] = mean;
-        statistics[BMBC_STAT_S0 * stride + p] = s0;
-        statistics[BMBC_STAT_S1 * stride + p] = s1;
-        statistics[BMBC_STAT_VARIANCE * stride + p] = variance;
-    }
 
 } // namespace
 
@@ -314,21 +108,7 @@ void accumulateBMBCLocalProfileSum(BMBCLocalProfileSum &local, const LBMState &s
     if constexpr (NUM_GPUS != 2)
         throw std::runtime_error("Local BMBC partial sums require two GPUs");
 
-    const int lower_global_z = (GLOBAL_NZ - 1) / 2;
-    const int upper_global_z = GLOBAL_NZ / 2;
-    const int global_center_z = info.global_z_start == 0
-                                    ? lower_global_z : upper_global_z;
-    if (global_center_z < info.global_z_start ||
-        global_center_z > info.global_z_end)
-        throw std::runtime_error("BMBC geometric center not in subdomain");
-    const int local_center_z = global_center_z - info.global_z_start;
-
-    constexpr int threads = 256;
-    const unsigned int blocks = static_cast<unsigned int>(
-        (BMBC_PROFILE_POINTS + threads - 1) / threads);
-    gpuAccumulateBMBCLocalProfile<<<blocks, threads, 0, stream>>>(
-        state, local_center_z, local.d_sum);
-    checkCuda(cudaGetLastError());
+    launchBMBCAccumulation(state, info, local.d_sum, stream);
 }
 
 void freeBMBCLocalProfileSum(BMBCLocalProfileSum &local)
@@ -452,7 +232,7 @@ void allocateBMBCProfiles(BMBCProfiles &monitor,
                           const std::size_t block_samples,
                           const std::size_t capacity_blocks)
 {
-    if (monitor.d_batch_sum || monitor.d_batch_means || monitor.d_statistics)
+    if (monitor.d_batch_sum || monitor.d_batch_means)
         throw std::runtime_error("BMBC monitor already allocated");
     if (block_samples == 0 || capacity_blocks == 0)
         throw std::runtime_error("BMBC sizes must be positive");
@@ -467,55 +247,12 @@ void allocateBMBCProfiles(BMBCProfiles &monitor,
     checkCuda(cudaMalloc(reinterpret_cast<void **>(&monitor.d_batch_means),
                          history_bytes));
     checkCuda(cudaMemset(monitor.d_batch_sum, 0, sum_bytes));
-    checkCuda(cudaMalloc(
-        reinterpret_cast<void **>(&monitor.d_statistics),
-        BMBC_STAT_FIELDS * sum_bytes));
 
     monitor.block_samples = block_samples;
     monitor.capacity_blocks = capacity_blocks;
     monitor.samples_in_block = 0;
     monitor.completed_blocks = 0;
     monitor.total_samples = 0;
-}
-
-void computeBMBCGroupedStatistics(
-    BMBCProfiles &monitor,
-    const std::size_t group_size,
-    const cudaStream_t stream)
-{
-    if (!monitor.d_batch_means || !monitor.d_statistics)
-        throw std::runtime_error("BMBC monitor is not allocated");
-
-    if (group_size == 0)
-        throw std::runtime_error("BMBC group size must be positive");
-
-    const std::size_t K =
-        monitor.completed_blocks / group_size;
-
-    if (K < 3)
-        throw std::runtime_error(
-            "BMBC requires at least three complete groups");
-
-    constexpr int threads = 256;
-
-    const unsigned int blocks =
-        static_cast<unsigned int>(
-            (BMBC_PROFILE_POINTS + threads - 1) / threads);
-
-    gpuComputeBMBCStatistics<<<blocks, threads, 0, stream>>>(
-        monitor.d_batch_means,
-        monitor.completed_blocks,
-        group_size,
-        monitor.d_statistics);
-
-    checkCuda(cudaGetLastError());
-}
-
-void computeBMBCStatistics(
-    BMBCProfiles &monitor,
-    const cudaStream_t stream)
-{
-    computeBMBCGroupedStatistics(monitor, 1, stream);
 }
 
 static void ensureBMBCBlockCapacity(
@@ -572,6 +309,7 @@ static void ensureBMBCBlockCapacity(
 
 void accumulateBMBCProfiles(BMBCProfiles &monitor,
                             const LBMState &state,
+                            const SubDomainInfo &info,
                             const cudaStream_t stream)
 {
     if (!monitor.d_batch_sum || !monitor.d_batch_means)
@@ -586,9 +324,7 @@ void accumulateBMBCProfiles(BMBCProfiles &monitor,
     const unsigned int blocks =
         static_cast<unsigned int>((BMBC_PROFILE_POINTS + threads - 1) / threads);
 
-    gpuAccumulateBMBCProfiles<<<blocks, threads, 0, stream>>>(
-        state, monitor.d_batch_sum);
-    checkCuda(cudaGetLastError());
+    launchBMBCAccumulation(state, info, monitor.d_batch_sum, stream);
 
     ++monitor.samples_in_block;
     ++monitor.total_samples;
@@ -618,69 +354,127 @@ void copyBMBCCompletedMeansToHost(
                              count * sizeof(double), cudaMemcpyDeviceToHost));
 }
 
-void copyBMBCStatisticsToHost(
-    const BMBCProfiles &monitor, std::vector<double> &host_statistics)
+std::size_t usableBMBCBlocks(const std::size_t count)
 {
-    if (!monitor.d_statistics)
-        throw std::runtime_error("BMBC monitor is not allocated");
-    if (monitor.completed_blocks < 3)
-        throw std::runtime_error("Not enough completed BMBC blocks");
+    return count < BMBC_BLOCK_MULTIPLE ? count : count - count % BMBC_BLOCK_MULTIPLE;
+}
 
-    const std::size_t count = BMBC_STAT_FIELDS * BMBC_PROFILE_POINTS;
-    host_statistics.resize(count);
-    checkCuda(cudaMemcpy(host_statistics.data(), monitor.d_statistics,
-                         count * sizeof(double), cudaMemcpyDeviceToHost));
+BMBCEstimate estimateBMBC(const std::vector<double> &series)
+{
+    const std::size_t total = series.size();
+    BMBCEstimate estimate;
+    estimate.mean = std::accumulate(series.begin(), series.end(), 0.0) / static_cast<double>(total);
+    estimate.error = std::numeric_limits<double>::quiet_NaN();
+
+    for (std::size_t size = 1; size <= total / 3; ++size)
+    {
+        if (total % size != 0)
+            continue;
+
+        const std::size_t groups = total / size;
+        double s0 = 0.0;
+        double s1 = 0.0;
+        double previous = 0.0;
+
+        for (std::size_t group = 0; group < groups; ++group)
+        {
+            double sum = 0.0;
+            for (std::size_t k = group * size; k < (group + 1) * size; ++k)
+                sum += series[k] - estimate.mean;
+
+            const double centered = sum / static_cast<double>(size);
+            s0 += centered * centered;
+            s1 += previous * centered;
+            previous = centered;
+        }
+
+        if (s1 <= BMBC_CORRELATION_LIMIT * s0)
+        {
+            estimate.error = std::sqrt(
+                (s0 + 2.0 * s1) / (static_cast<double>(groups - 1) * static_cast<double>(groups - 2)));
+            estimate.group = size;
+            estimate.groups = groups;
+            break;
+        }
+    }
+
+    return estimate;
 }
 
 void reportBMBCProfiles(
-    BMBCProfiles &monitor,
+    const BMBCProfiles &monitor,
     const std::size_t completed_steps,
     const cudaStream_t stream)
 {
-    if (monitor.completed_blocks < 3)
+    const std::size_t blocks = usableBMBCBlocks(monitor.completed_blocks);
+    if (blocks < 3)
         return;
 
-    // Compute statistics for every profile point on the GPU.
-    computeBMBCGroupedStatistics(monitor, 1, stream);
-
     checkCuda(cudaStreamSynchronize(stream));
+    std::vector<double> means;
+    copyBMBCCompletedMeansToHost(monitor, means);
 
-    std::vector<double> statistics;
-    copyBMBCStatisticsToHost(monitor, statistics);
-
-    const std::size_t stride = BMBC_PROFILE_POINTS;
-
-    const auto printPoint = [&](const std::size_t p, const char *name)
+    struct Row
     {
-        const double mean =
-            statistics[BMBC_STAT_MEAN * stride + p];
-
-        const double s0 =
-            statistics[BMBC_STAT_S0 * stride + p];
-
-        const double s1 =
-            statistics[BMBC_STAT_S1 * stride + p];
-
-        const double variance =
-            statistics[BMBC_STAT_VARIANCE * stride + p];
-
-        std::printf(
-            "  %s | Mean %.9e | S1/S0 %.6f | Variance %.9e\n",
-            name,
-            mean,
-            s0 > 0.0 ? s1 / s0 : 0.0,
-            variance);
+        int line, first, second, product;
     };
 
-    std::printf(
-        "\nBMBC | Step %zu | Samples %zu | Blocks %zu | M %zu\n",
-        completed_steps,
-        monitor.total_samples,
-        monitor.completed_blocks,
-        monitor.block_samples);
+    constexpr Row rows[] = {
+        {BMBC_Y_CENTER, LOCAL_FIELD_UX, LOCAL_FIELD_UX, -1},
+        {BMBC_X_CENTER, LOCAL_FIELD_UY, LOCAL_FIELD_UY, -1},
+        {BMBC_Y_CENTER, LOCAL_FIELD_UX, LOCAL_FIELD_UX, LOCAL_FIELD_UX2},
+        {BMBC_Y_CENTER, LOCAL_FIELD_UX, LOCAL_FIELD_UY, LOCAL_FIELD_UXUY},
+        {BMBC_X_CENTER, LOCAL_FIELD_UY, LOCAL_FIELD_UY, LOCAL_FIELD_UY2},
+        {BMBC_X_CENTER, LOCAL_FIELD_UX, LOCAL_FIELD_UY, LOCAL_FIELD_UXUY}};
 
-    printPoint(BMBC_UX_Y_OFFSET + NY - 2, "ux(y=NY-2)");
-    printPoint(BMBC_UY_X_OFFSET + NX - 2, "uy(x=NX-2)");
+    double velocity_error = 0.0;
+    double stress_error = 0.0;
+    std::vector<double> series(blocks), first(blocks), second(blocks);
+
+    for (const Row &row : rows)
+    {
+        const std::size_t size = bmbcLineSize(row.line);
+        const auto extract = [&](std::vector<double> &target, const int field, const std::size_t index)
+        {
+            for (std::size_t k = 0; k < blocks; ++k)
+                target[k] = means[k * BMBC_PROFILE_POINTS + bmbcPoint(row.line, field, index)];
+            return std::accumulate(target.begin(), target.end(), 0.0) / static_cast<double>(blocks);
+        };
+
+        double peak = 0.0;
+        double error = 0.0;
+
+        for (std::size_t index = 1; index + 1 < size; ++index)
+        {
+            const double a = extract(first, row.first, index);
+            const double b = extract(second, row.second, index);
+
+            if (row.product < 0)
+                series = first;
+            else
+            {
+                extract(series, row.product, index);
+                for (std::size_t k = 0; k < blocks; ++k)
+                    series[k] += a * b - a * second[k] - b * first[k];
+            }
+
+            const BMBCEstimate estimate = estimateBMBC(series);
+            peak = std::max(peak, std::abs(estimate.mean));
+
+            error = std::max(
+                error, std::isfinite(estimate.error) ? estimate.error : std::numeric_limits<double>::infinity());
+        }
+
+        double &largest = row.product < 0 ? velocity_error : stress_error;
+        if (peak > 0.0)
+            largest = std::max(largest, 100.0 * error / peak);
+    }
+
+    std::printf(
+        "\nBMBC | t* %.1f | Max error: velocity %.1f%% | Reynolds stress %.1f%%\n",
+        static_cast<double>(completed_steps) * static_cast<double>(U_MAX) /
+            static_cast<double>(GLOBAL_NX - 1),
+        velocity_error, stress_error);
 }
 
 void freeBMBCProfiles(BMBCProfiles &monitor)
@@ -689,7 +483,5 @@ void freeBMBCProfiles(BMBCProfiles &monitor)
         checkCuda(cudaFree(monitor.d_batch_sum));
     if (monitor.d_batch_means)
         checkCuda(cudaFree(monitor.d_batch_means));
-    if (monitor.d_statistics)
-        checkCuda(cudaFree(monitor.d_statistics));
     monitor = BMBCProfiles{};
 }
